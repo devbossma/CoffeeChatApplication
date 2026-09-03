@@ -115,8 +115,9 @@
             </plugin>
 
             <!-- Source: https://mvnrepository.com/artifact/org.jacoco/jacoco-maven-plugin -->
-            <!-- Coverage gate, same tool MyDesignPattern uses; thresholds to be tuned once
-                 real packages exist, see PRD.md Part 04. -->
+            <!-- Coverage gate, same tool and same rule MyDesignPattern uses: mvn verify fails
+                 the build if any package's line coverage drops below 80%. See PRD.md section 10
+                 and CLAUDE.md "Before you write any test". -->
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
@@ -134,6 +135,35 @@
                         <goals>
                             <goal>report</goal>
                         </goals>
+                    </execution>
+                    <execution>
+                        <id>jacoco-check</id>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <!-- Rule-level <excludes> only applies when <element> is CLASS, so
+                                 for a PACKAGE-element rule the exclusion has to live here instead
+                                 (same reasoning as MyDesignPattern's pom.xml). Only the app entry
+                                 point is excluded so far, since it's just SpringApplication.run(...)
+                                 and not meaningfully unit-testable; add to this list only for
+                                 genuinely untestable wiring, never to paper over a real gap. -->
+                            <excludes>
+                                <exclude>dev/saberlabs/coffeechat/CoffeeChatApplication.class</exclude>
+                            </excludes>
+                            <rules>
+                                <rule>
+                                    <element>PACKAGE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.80</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
