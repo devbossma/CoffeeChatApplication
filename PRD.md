@@ -156,8 +156,16 @@ SQLite.
 |---|---|---|
 | `ChatSessionEntity` | `chat.ChatSession` (record) | `id`, `customerId`, `baristaId` (nullable), `status` (`WAITING`/`ACTIVE`/`INACTIVE`), `createdAt`. Becomes a real `@Entity` with a generated id instead of a record built by a factory method. |
 | `ChatMessageEntity` | `chat.ChatMessage` (record) | `id`, `type` (`CHAT_MESSAGE`/`SYSTEM_MESSAGE`), `sessionId` (FK), `senderId`, `senderName`, `content`, `timestamp`, `orderId` (nullable). |
-| `OrderEntity` | `models.Order` | Persisted instead of held only in `CoffeeShop`'s in-memory list; `status`, `customerId`, coffee description, price, timestamps. |
-| `CustomerEntity` | `models.Customer` | `id`, `name`, `loyaltyTier` (or a derived fulfilled-order count), `totalOrders`. |
+| `OrderEntity` | `models.Order` | Persisted instead of held only in `CoffeeShop`'s in-memory list; `status`, `customer` (FK, not bare id), base coffee type, applied extras (own table/`@ElementCollection`, not a flattened string), price breakdown, `appliedLoyaltyTier` (frozen at placement, never recomputed against the customer's current tier), timestamps. |
+| `CustomerEntity` | `models.Customer` | `id`, `name`, `fulfilledOrders` count — no separate `loyaltyTier` column; tier is derived at read time (`LoyaltyTier.forCount(...)`) so it can't drift from the count. |
+| `UserEntity` *(new)* | — | `id`, `name`, `role` (`CUSTOMER`/`BARISTA`/`MANAGER`). Backs `ChatSessionEntity.baristaId`, which had nothing to reference before. |
+| `PaymentEntity` *(new)* | `adapter/` (Adapter pattern) | 1:1 with `OrderEntity`: gateway used, amount, status (`PENDING`/`PAID`/`FAILED`). Without this the Pay command step has no persisted trace. |
+| `OrderStatusHistoryEntity` *(new)* | — | `orderId`, `fromStatus`, `toStatus`, `changedAt`. The durable audit trail; `OrderInvoker`'s in-memory command history is a recent-activity/undo aid, not this. |
+
+`ChatMessageEntity.sessionId` and `OrderEntity.customerId` are real `@ManyToOne` associations,
+not bare `Long` columns. Indices: `chat_message(session_id, timestamp)` (ordered history load),
+`order_entity(customer_id)` (per-customer queries). Full rationale for all of the above:
+`CLAUDE.md` → "Schema additions needed before Part 03".
 
 Repositories are plain Spring Data JPA interfaces
 (`ChatMessageRepository extends JpaRepository<ChatMessageEntity, Long>`,
@@ -208,23 +216,23 @@ management. That whole class disappears; Spring Boot's
   coverage gate, not just "some tests exist") — exact tool/threshold
   (JaCoCo, as before) to be wired once the project is scaffolded.
 
-## 11. Explicit open questions
+## 11. Resolved decisions (previously open questions)
 
-These are real decisions still pending, deliberately not pre-answered here:
+All four were open at scaffold time and are now settled — full rationale for each lives in
+`CLAUDE.md` → "Resolving PRD §11's open questions"; this section just records the outcome so
+the PRD and `CLAUDE.md` don't drift apart.
 
-1. **Async dispatch shape.** Whether `Barista` order preparation is
-   `@Async`-triggered directly per dequeued order or driven by a
-   `@Scheduled` poller reading `OrderQueue` (§8) — needs a short spike
-   against Spring's actual `@Async` semantics before locking in.
-2. **Strategy bean keying.** Whether `Map<LoyaltyTier, PricingStrategy>`
-   injection is keyed by enum-matching bean names or an explicit
-   `@Qualifier`/custom annotation per tier (§7.2, row 4).
-3. **Auth scope.** Whether the `Role` enum needs any enforcement at all in
-   the MVP (e.g. a barista-only endpoint) or purely models identity for
-   sender attribution in chat, per the non-goal in §4.
-4. **Project coordinates.** Group id / artifact id / base package for the
-   new repo — this PRD assumes `dev.saberlabs.coffeechat` for continuity;
-   confirm before running Spring Initializr.
+1. **Async dispatch shape.** N `@Async` consumer loops (pool size from a `ThreadPoolTaskExecutor`
+   bean), started once via `@EventListener(ApplicationReadyEvent.class)`, blocking on
+   `orderQueue.take()` — not a `@Scheduled` poller.
+2. **Strategy bean keying.** Each `PricingStrategy` exposes `supportedTier()`; a
+   `PricingStrategyResolver` builds an `EnumMap<LoyaltyTier, PricingStrategy>` from the injected
+   `List<PricingStrategy>` — no bean-name string matching, no per-tier qualifier annotation.
+3. **Auth scope.** `Role` gets one real enforced boundary: only `BARISTA`/`MANAGER` may call
+   order-status-transition endpoints, only `BARISTA`-role users are eligible for `BaristaQueue`
+   matching. Plain service-layer check, no Spring Security dependency.
+4. **Project coordinates.** `dev.saberlabs.coffeechat`, groupId `dev.saberlabs`, artifactId
+   `coffee-chat-application` — already in effect in `pom.xml`.
 
 ## 12. Milestones
 

@@ -116,8 +116,7 @@
 
             <!-- Source: https://mvnrepository.com/artifact/org.jacoco/jacoco-maven-plugin -->
             <!-- Coverage gate, same tool and same rule MyDesignPattern uses: mvn verify fails
-                 the build if any package's line coverage drops below 80%. See PRD.md section 10
-                 and CLAUDE.md "Before you write any test". -->
+                 the build if any package's line coverage drops below 80%. -->
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>

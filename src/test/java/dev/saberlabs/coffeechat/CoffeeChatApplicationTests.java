@@ -14,7 +14,6 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * local database, via Testcontainers' {@code @ServiceConnection} -- Spring Boot wires the
  * datasource to the container automatically, no manual property overrides needed. This is the
  * same mechanism the real persistence/integration tests will use once entities exist
- * (see PRD.md section 10). Requires Docker to be running locally.
  */
 @SpringBootTest
 @Testcontainers
