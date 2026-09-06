@@ -80,6 +80,14 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- Part 01/03: the @WebMvcTest / MockMvc slice. Spring Boot 4 split this out of
+             spring-boot-starter-test into its own module; version managed by the parent BOM. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Part 04: @DataJpaTest / @SpringBootTest against a real Postgres container,
              not an in-memory stand-in. spring-boot-testcontainers' version comes from the
              parent's dependency-management. -->
