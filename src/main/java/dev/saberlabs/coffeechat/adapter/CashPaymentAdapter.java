@@ -22,7 +22,7 @@ public class CashPaymentAdapter extends AbstractPaymentAdapter {
         this(new CashPaymentService());
     }
 
-    CashPaymentAdapter(CashPaymentService register) {
+    public CashPaymentAdapter(CashPaymentService register) {
         this.register = register;
     }
 

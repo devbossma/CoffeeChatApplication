@@ -103,6 +103,37 @@ class OrderTest {
     }
 
     @Nested
+    @DisplayName("restoreStatus()")
+    class RestoreStatusTests {
+
+        @Test
+        @DisplayName("forces a backwards status the transition guard would reject")
+        void forcesBackwards() {
+            Order order = espressoOrder(List.of());
+            order.transitionTo(OrderStatus.PLACED);
+            order.transitionTo(OrderStatus.PREPARING);
+            order.restoreStatus(OrderStatus.PLACED);
+            assertEquals(OrderStatus.PLACED, order.status());
+        }
+
+        @Test
+        @DisplayName("refreshes updatedAt")
+        void refreshesUpdatedAt() {
+            Order order = espressoOrder(List.of());
+            order.transitionTo(OrderStatus.PLACED);
+            order.restoreStatus(OrderStatus.CANCELLED);
+            assertNotNull(order.updatedAt());
+        }
+
+        @Test
+        @DisplayName("rejects a null target")
+        void rejectsNull() {
+            Order order = espressoOrder(List.of());
+            assertThrows(NullPointerException.class, () -> order.restoreStatus(null));
+        }
+    }
+
+    @Nested
     @DisplayName("toString()")
     class ToStringTests {
 

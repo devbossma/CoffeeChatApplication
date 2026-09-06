@@ -88,6 +88,20 @@ public class Order {
         this.updatedAt = now;
     }
 
+    /**
+     * Forces the status to {@code target}, bypassing the {@link #transitionTo(OrderStatus)}
+     * legality check.
+     *
+     * <p>For the Command pattern's {@code undo()} only &mdash; reverting a lifecycle step means
+     * moving "backwards", which the normal guard (correctly) forbids. {@code MyDesignPattern} has
+     * the same escape hatch (its {@code restoreStatus}). {@code updatedAt} is refreshed;
+     * {@code placedAt} is left alone.
+     */
+    public void restoreStatus(OrderStatus target) {
+        this.status = Objects.requireNonNull(target, "target status cannot be null");
+        this.updatedAt = Instant.now();
+    }
+
     public Long id() {
         return id;
     }

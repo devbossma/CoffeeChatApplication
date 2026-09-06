@@ -17,7 +17,7 @@ public class PayPalAdapter extends AbstractPaymentAdapter {
         this(new PayPalPaymentService());
     }
 
-    PayPalAdapter(PayPalPaymentService paypal) {
+    public PayPalAdapter(PayPalPaymentService paypal) {
         this.paypal = paypal;
     }
 

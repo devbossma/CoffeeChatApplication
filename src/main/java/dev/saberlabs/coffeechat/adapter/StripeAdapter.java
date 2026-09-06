@@ -18,7 +18,7 @@ public class StripeAdapter extends AbstractPaymentAdapter {
         this(new StripePaymentService());
     }
 
-    StripeAdapter(StripePaymentService stripe) {
+    public StripeAdapter(StripePaymentService stripe) {
         this.stripe = stripe;
     }
 
