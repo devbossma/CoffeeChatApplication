@@ -14,6 +14,7 @@ import dev.saberlabs.coffeechat.model.LoyaltyTier;
 import dev.saberlabs.coffeechat.model.Order;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 import dev.saberlabs.coffeechat.observer.OrderEventPublisher;
+import dev.saberlabs.coffeechat.prototype.OrderPrototype;
 import dev.saberlabs.coffeechat.service.CustomerService;
 import dev.saberlabs.coffeechat.service.OrderService;
 import dev.saberlabs.coffeechat.singleton.CoffeeShop;
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.ObjectProvider;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -35,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 @DisplayName("CoffeeShopFacade")
 class CoffeeShopFacadeTest {
@@ -46,11 +49,16 @@ class CoffeeShopFacadeTest {
     private CoffeeShopFacade facade;
 
     @BeforeEach
+    @SuppressWarnings("unchecked")
     void setUp() {
         coffeeShop = new CoffeeShop(3);
         orders = new OrderService();
         customers = new CustomerService();
         invoker = new OrderInvoker();
+
+        ObjectProvider<OrderPrototype> prototypeProvider = mock(ObjectProvider.class);
+        when(prototypeProvider.getObject()).thenAnswer(inv -> new OrderPrototype());
+
         facade = new CoffeeShopFacade(
                 coffeeShop,
                 new CoffeeFactory(),
@@ -62,7 +70,8 @@ class CoffeeShopFacadeTest {
                 orders,
                 customers,
                 mock(OrderEventPublisher.class),
-                invoker);
+                invoker,
+                prototypeProvider);
     }
 
     private Customer customerWithFulfilled(long fulfilled) {
@@ -219,6 +228,49 @@ class CoffeeShopFacadeTest {
             Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
             facade.cancelOrder(placed.id());
             assertEquals(OrderStatus.CANCELLED, facade.getOrder(placed.id()).status());
+        }
+    }
+
+    @Nested
+    @DisplayName("reorder()")
+    class ReorderTests {
+
+        @Test
+        @DisplayName("re-places an equivalent order: same coffee + extras, new id, fresh PLACED status")
+        void reordersEquivalent() {
+            Customer customer = customerWithFulfilled(0);
+            Order original = facade.placeOrder(
+                    request(customer.id(), CoffeeType.LATTE, ExtraType.MILK, ExtraType.SUGAR));
+            facade.processOrder(original.id(), PaymentProvider.CASH);
+
+            Order clone = facade.reorder(original.id());
+
+            assertTrue(!clone.id().equals(original.id()));
+            assertEquals(OrderStatus.PLACED, clone.status());
+            assertEquals(CoffeeType.LATTE, clone.baseType());
+            assertEquals(List.of(ExtraType.MILK, ExtraType.SUGAR), clone.extras());
+            assertEquals(original.coffee().description(), clone.coffee().description());
+        }
+
+        @Test
+        @DisplayName("re-prices the clone against the customer's CURRENT tier, not the original's")
+        void repricesAgainstCurrentTier() {
+            Customer customer = customerWithFulfilled(5); // REGULAR
+            Order original = facade.placeOrder(request(customer.id(), CoffeeType.LATTE));
+            assertEquals(LoyaltyTier.REGULAR, original.appliedLoyaltyTier());
+
+            // customer reaches SILVER before re-ordering
+            customers.incrementFulfilled(customer.id());
+            Order clone = facade.reorder(original.id());
+
+            assertEquals(LoyaltyTier.SILVER, clone.appliedLoyaltyTier());
+            assertEquals(new BigDecimal("3.60"), clone.price().total());
+        }
+
+        @Test
+        @DisplayName("throws for an unknown order id")
+        void throwsForUnknown() {
+            assertThrows(OrderNotFoundException.class, () -> facade.reorder(404L));
         }
     }
 

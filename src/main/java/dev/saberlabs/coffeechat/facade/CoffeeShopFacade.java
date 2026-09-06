@@ -17,12 +17,14 @@ import dev.saberlabs.coffeechat.model.LoyaltyTier;
 import dev.saberlabs.coffeechat.model.Order;
 import dev.saberlabs.coffeechat.model.PriceBreakdown;
 import dev.saberlabs.coffeechat.observer.OrderEventPublisher;
+import dev.saberlabs.coffeechat.prototype.OrderPrototype;
 import dev.saberlabs.coffeechat.service.CustomerService;
 import dev.saberlabs.coffeechat.service.OrderService;
 import dev.saberlabs.coffeechat.singleton.CoffeeShop;
 import dev.saberlabs.coffeechat.strategy.PricingStrategy;
 import dev.saberlabs.coffeechat.strategy.PricingStrategyResolver;
 import dev.saberlabs.coffeechat.template.CoffeePreparationResolver;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -51,6 +53,7 @@ public class CoffeeShopFacade {
     private final CustomerService customers;
     private final OrderEventPublisher events;
     private final OrderInvoker invoker;
+    private final ObjectProvider<OrderPrototype> orderPrototypeProvider;
 
     public CoffeeShopFacade(CoffeeShop coffeeShop,
                             CoffeeFactory coffeeFactory,
@@ -60,7 +63,8 @@ public class CoffeeShopFacade {
                             OrderService orders,
                             CustomerService customers,
                             OrderEventPublisher events,
-                            OrderInvoker invoker) {
+                            OrderInvoker invoker,
+                            ObjectProvider<OrderPrototype> orderPrototypeProvider) {
         this.coffeeShop = coffeeShop;
         this.coffeeFactory = coffeeFactory;
         this.pricing = pricing;
@@ -70,6 +74,7 @@ public class CoffeeShopFacade {
         this.customers = customers;
         this.events = events;
         this.invoker = invoker;
+        this.orderPrototypeProvider = orderPrototypeProvider;
     }
 
     /**
@@ -148,6 +153,21 @@ public class CoffeeShopFacade {
         payOrder(orderId, provider);
         fulfillOrder(orderId);
         return getOrder(orderId);
+    }
+
+    /**
+     * Re-order an existing order (Pattern 9: PROTOTYPE). Fetches a fresh prototype-scoped
+     * {@link OrderPrototype}, seeds it from the original's structure (base coffee + extras +
+     * customer, never id/status/timestamps), and re-places it &mdash; ending in
+     * {@link #placeOrder(PlaceOrderRequest)}, not a separate path.
+     *
+     * @throws OrderNotFoundException if {@code orderId} is unknown
+     */
+    public Order reorder(Long orderId) {
+        Order original = getOrder(orderId);
+        OrderPrototype prototype = orderPrototypeProvider.getObject();
+        prototype.copyOf(original);
+        return placeOrder(prototype.toPlaceOrderRequest());
     }
 
     /** Undo the most recent lifecycle action, if any. */
