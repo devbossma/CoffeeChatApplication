@@ -2,6 +2,7 @@ services:
   db:
     image: postgres:17-alpine
     container_name: coffee-chat-db
+    restart: unless-stopped
     environment:
       POSTGRES_DB: coffee_chat
       POSTGRES_USER: coffee_chat
