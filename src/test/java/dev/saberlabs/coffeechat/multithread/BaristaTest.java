@@ -14,6 +14,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -32,6 +33,23 @@ class BaristaTest {
         orderQueue = new OrderQueue(5);
         facade = mock(CoffeeShopFacade.class);
         barista = new Barista(orderQueue, facade);
+    }
+
+    @Nested
+    @DisplayName("constructor")
+    class ConstructorTests {
+
+        @Test
+        @DisplayName("rejects a null OrderQueue")
+        void rejectsNullOrderQueue() {
+            assertThrows(NullPointerException.class, () -> new Barista(null, facade));
+        }
+
+        @Test
+        @DisplayName("rejects a null CoffeeShopFacade")
+        void rejectsNullFacade() {
+            assertThrows(NullPointerException.class, () -> new Barista(orderQueue, null));
+        }
     }
 
     /** Runs consumeLoop() on a plain thread, bypassing the @Async proxy (unit-test scope). */

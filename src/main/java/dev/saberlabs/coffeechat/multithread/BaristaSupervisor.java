@@ -2,11 +2,14 @@ package dev.saberlabs.coffeechat.multithread;
 
 import dev.saberlabs.coffeechat.singleton.CoffeeShop;
 import jakarta.annotation.PreDestroy;
+import jakarta.validation.constraints.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
+
+import java.util.Objects;
 
 /**
  * Starts the Barista consumer pool once the application is fully up, per the resolved concurrency
@@ -26,9 +29,9 @@ public class BaristaSupervisor {
     private final Barista barista;
     private final CoffeeShop coffeeShop;
 
-    public BaristaSupervisor(Barista barista, CoffeeShop coffeeShop) {
-        this.barista = barista;
-        this.coffeeShop = coffeeShop;
+    public BaristaSupervisor(@NotNull Barista barista, @NotNull CoffeeShop coffeeShop) {
+        this.barista = Objects.requireNonNull(barista, "barista cannot be null");
+        this.coffeeShop = Objects.requireNonNull(coffeeShop, "coffeeShop cannot be null");
     }
 
     @EventListener(ApplicationReadyEvent.class)

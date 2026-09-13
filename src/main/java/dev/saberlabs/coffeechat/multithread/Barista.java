@@ -2,10 +2,13 @@ package dev.saberlabs.coffeechat.multithread;
 
 import dev.saberlabs.coffeechat.facade.CoffeeShopFacade;
 import dev.saberlabs.coffeechat.model.Order;
+import jakarta.validation.constraints.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+
+import java.util.Objects;
 
 /**
  * Pattern: PRODUCER-CONSUMER (Part 02) &mdash; the consumer.
@@ -30,9 +33,9 @@ public class Barista {
     private final CoffeeShopFacade facade;
     private volatile boolean running = true;
 
-    public Barista(OrderQueue orderQueue, CoffeeShopFacade facade) {
-        this.orderQueue = orderQueue;
-        this.facade = facade;
+    public Barista(@NotNull OrderQueue orderQueue, @NotNull CoffeeShopFacade facade) {
+        this.orderQueue = Objects.requireNonNull(orderQueue, "orderQueue cannot be null");
+        this.facade = Objects.requireNonNull(facade, "facade cannot be null");
     }
 
     /**

@@ -5,6 +5,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -12,6 +13,25 @@ import static org.mockito.Mockito.when;
 
 @DisplayName("BaristaSupervisor")
 class BaristaSupervisorTest {
+
+    @Nested
+    @DisplayName("constructor")
+    class ConstructorTests {
+
+        @Test
+        @DisplayName("rejects a null Barista")
+        void rejectsNullBarista() {
+            assertThrows(NullPointerException.class,
+                    () -> new BaristaSupervisor(null, mock(CoffeeShop.class)));
+        }
+
+        @Test
+        @DisplayName("rejects a null CoffeeShop")
+        void rejectsNullCoffeeShop() {
+            assertThrows(NullPointerException.class,
+                    () -> new BaristaSupervisor(mock(Barista.class), null));
+        }
+    }
 
     @Nested
     @DisplayName("startBaristas()")

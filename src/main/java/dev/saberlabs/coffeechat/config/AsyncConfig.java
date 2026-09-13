@@ -1,10 +1,13 @@
 package dev.saberlabs.coffeechat.config;
 
 import dev.saberlabs.coffeechat.singleton.CoffeeShop;
+import jakarta.validation.constraints.NotNull;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+
+import java.util.Objects;
 
 /**
  * Enables {@code @Async} and defines the dedicated executor the Part 02 Barista consumer loops
@@ -22,7 +25,8 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 public class AsyncConfig {
 
     @Bean("baristaTaskExecutor")
-    public ThreadPoolTaskExecutor baristaTaskExecutor(CoffeeShop coffeeShop) {
+    public ThreadPoolTaskExecutor baristaTaskExecutor(@NotNull CoffeeShop coffeeShop) {
+        Objects.requireNonNull(coffeeShop, "coffeeShop cannot be null");
         int poolSize = coffeeShop.baristaPoolSize();
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(poolSize);

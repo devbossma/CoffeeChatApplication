@@ -4,10 +4,13 @@ import dev.saberlabs.coffeechat.model.Order;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 import dev.saberlabs.coffeechat.observer.OrderStatusChangedEvent;
 import dev.saberlabs.coffeechat.service.OrderService;
+import jakarta.validation.constraints.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
+
+import java.util.Objects;
 
 /**
  * Enqueues a newly-placed order onto {@link OrderQueue} for the Barista pool to pick up.
@@ -32,9 +35,9 @@ public class OrderQueueDispatcher {
     private final OrderQueue orderQueue;
     private final OrderService orders;
 
-    public OrderQueueDispatcher(OrderQueue orderQueue, OrderService orders) {
-        this.orderQueue = orderQueue;
-        this.orders = orders;
+    public OrderQueueDispatcher(@NotNull OrderQueue orderQueue, @NotNull OrderService orders) {
+        this.orderQueue = Objects.requireNonNull(orderQueue, "orderQueue cannot be null");
+        this.orders = Objects.requireNonNull(orders, "orders cannot be null");
     }
 
     @EventListener

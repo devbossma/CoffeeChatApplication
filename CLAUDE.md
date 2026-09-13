@@ -157,10 +157,22 @@ undiscoverable from the signature alone. Do both, every time, for every paramete
 never be null. `@Nullable` is still fine/expected for documenting values that are genuinely
 allowed to be null.
 
+The one real exception: a web DTO bound via `@Valid @RequestBody` (e.g. `PlaceOrderHttpRequest`)
+genuinely goes through Spring MVC's Bean Validation at the HTTP boundary — `@NotNull` there *is*
+live enforcement, so it needs no `Objects.requireNonNull` backup. The "annotation alone does
+nothing" problem is specific to plain POJOs built with `new` outside any Spring-managed
+validation path (commands, and Spring `@Component`/`@Service` beans built once by the container
+but still worth guarding against a misconfigured or manually-`new`'d instance in a test).
+
 This is a convention for new code, not a mandate to retrofit already-correct, already-merged
-Part 01 classes that enforce nullability with a bare `Objects.requireNonNull` and no annotation
-(`Order`, `Customer`, `CoffeeDecorators`, `CoffeeFactory`, `PricingStrategyResolver`,
-`PaymentGatewayResolver`, `OrderPrototype`, ...).
+Part 01 classes that already enforce nullability without the annotation — whether via a bare
+`Objects.requireNonNull` (`Order`, `Customer`, `CoffeeDecorators`, `OrderPrototype`,
+`PriceBreakdown`, `OrderStatusChangedEvent`, `PlaceOrderRequest`, ...) or a method-level
+`IllegalArgumentException` check (`CoffeeFactory.create()`, `PricingStrategyResolver.forTier()`,
+`PaymentGatewayResolver.forProvider()`). Note that `PricingStrategyResolver`'s and
+`PaymentGatewayResolver`'s *constructors* don't null-check their injected `List` at all — low
+real risk since Spring always injects a non-null (possibly empty) list, left as-is under the same
+no-retrofit rule, not because it's the pattern to copy for new code.
 
 ## Before you write any test
 

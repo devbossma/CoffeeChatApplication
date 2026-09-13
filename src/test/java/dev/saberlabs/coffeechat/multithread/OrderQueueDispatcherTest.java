@@ -14,6 +14,7 @@ import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @DisplayName("OrderQueueDispatcher")
@@ -28,6 +29,23 @@ class OrderQueueDispatcherTest {
         orders = new OrderService();
         orderQueue = new OrderQueue(5);
         dispatcher = new OrderQueueDispatcher(orderQueue, orders);
+    }
+
+    @Nested
+    @DisplayName("constructor")
+    class ConstructorTests {
+
+        @Test
+        @DisplayName("rejects a null OrderQueue")
+        void rejectsNullOrderQueue() {
+            assertThrows(NullPointerException.class, () -> new OrderQueueDispatcher(null, orders));
+        }
+
+        @Test
+        @DisplayName("rejects a null OrderService")
+        void rejectsNullOrders() {
+            assertThrows(NullPointerException.class, () -> new OrderQueueDispatcher(orderQueue, null));
+        }
     }
 
     @Nested

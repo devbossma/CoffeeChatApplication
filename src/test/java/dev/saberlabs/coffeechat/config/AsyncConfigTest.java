@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @DisplayName("AsyncConfig")
@@ -19,6 +20,12 @@ class AsyncConfigTest {
     @Nested
     @DisplayName("baristaTaskExecutor()")
     class BaristaTaskExecutorTests {
+
+        @Test
+        @DisplayName("rejects a null CoffeeShop")
+        void rejectsNullCoffeeShop() {
+            assertThrows(NullPointerException.class, () -> new AsyncConfig().baristaTaskExecutor(null));
+        }
 
         @Test
         @DisplayName("sizes the pool (core and max) to CoffeeShop.baristaPoolSize()")
