@@ -4,6 +4,9 @@ import dev.saberlabs.coffeechat.model.Order;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 import dev.saberlabs.coffeechat.observer.OrderEventPublisher;
 import dev.saberlabs.coffeechat.service.OrderService;
+import jakarta.validation.constraints.NotNull;
+
+import java.util.Objects;
 
 /**
  * Shared plumbing for the status-changing commands: apply a transition (persist + publish the
@@ -16,10 +19,10 @@ abstract class AbstractOrderCommand implements OrderCommand {
     protected final OrderService orders;
     protected final OrderEventPublisher events;
 
-    protected AbstractOrderCommand(Order order, OrderService orders, OrderEventPublisher events) {
-        this.order = order;
-        this.orders = orders;
-        this.events = events;
+    protected AbstractOrderCommand(@NotNull Order order, @NotNull OrderService orders, @NotNull OrderEventPublisher events) {
+        this.order = Objects.requireNonNull(order, "order cannot be null");
+        this.orders = Objects.requireNonNull(orders, "orders cannot be null");
+        this.events = Objects.requireNonNull(events, "events cannot be null");
     }
 
     /** Legal forward move: {@code order.transitionTo(target)}, persist, then publish {@code from -> target}. */

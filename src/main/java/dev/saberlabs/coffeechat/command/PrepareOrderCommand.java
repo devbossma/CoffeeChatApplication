@@ -6,8 +6,10 @@ import dev.saberlabs.coffeechat.observer.OrderEventPublisher;
 import dev.saberlabs.coffeechat.service.OrderService;
 import dev.saberlabs.coffeechat.template.CoffeePreparationResolver;
 import dev.saberlabs.coffeechat.template.CoffeePreparationTemplate;
+import jakarta.validation.constraints.NotNull;
 
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Pattern 6: COMMAND &mdash; prepare the order: run the Template Method recipe for its coffee
@@ -22,12 +24,12 @@ public class PrepareOrderCommand extends AbstractOrderCommand {
     private final CoffeePreparationResolver preparations;
     private List<String> preparationLog = List.of();
 
-    public PrepareOrderCommand(Order order,
-                               OrderService orders,
-                               OrderEventPublisher events,
-                               CoffeePreparationResolver preparations) {
+    public PrepareOrderCommand(@NotNull Order order,
+                               @NotNull OrderService orders,
+                               @NotNull OrderEventPublisher events,
+                               @NotNull CoffeePreparationResolver preparations) {
         super(order, orders, events);
-        this.preparations = preparations;
+        this.preparations = Objects.requireNonNull(preparations, "preparations cannot be null");
     }
 
     @Override
