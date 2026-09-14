@@ -18,7 +18,12 @@ import java.util.Objects;
  * long-lived blocking task for the lifetime of the app, so there is no queueing of overflow work
  * on this executor and no reason for elastic sizing. {@code setWaitForTasksToCompleteOnShutdown(false)}
  * means a context shutdown interrupts a barista parked in {@code OrderQueue.take()} instead of
- * waiting on it forever.
+ * waiting on it forever &mdash; though the real fix for the graceful-shutdown stall this executor
+ * would otherwise sit through is {@code BaristaSupervisor.onContextClosed()}, see its javadoc.
+ *
+ * <p>{@code setDaemon(true)} is defensive insurance, not a fix: even if some future change
+ * reintroduces a shutdown path that fails to interrupt these threads, a daemon thread can never
+ * by itself keep the JVM (or a test runner's forked JVM) from exiting.
  */
 @Configuration
 @EnableAsync
@@ -33,6 +38,7 @@ public class AsyncConfig {
         executor.setMaxPoolSize(poolSize);
         executor.setQueueCapacity(0);
         executor.setThreadNamePrefix("barista-");
+        executor.setDaemon(true);
         executor.setWaitForTasksToCompleteOnShutdown(false);
         executor.setAwaitTerminationSeconds(5);
         executor.initialize();
