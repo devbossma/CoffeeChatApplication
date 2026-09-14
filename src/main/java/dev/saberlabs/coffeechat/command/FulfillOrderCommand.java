@@ -5,6 +5,9 @@ import dev.saberlabs.coffeechat.model.OrderStatus;
 import dev.saberlabs.coffeechat.observer.OrderEventPublisher;
 import dev.saberlabs.coffeechat.service.CustomerService;
 import dev.saberlabs.coffeechat.service.OrderService;
+import jakarta.validation.constraints.NotNull;
+
+import java.util.Objects;
 
 /**
  * Pattern 6: COMMAND &mdash; fulfil the order: {@code READY -> FULFILLED}, and bump the
@@ -16,12 +19,12 @@ public class FulfillOrderCommand extends AbstractOrderCommand {
 
     private final CustomerService customers;
 
-    public FulfillOrderCommand(Order order,
-                               OrderService orders,
-                               OrderEventPublisher events,
-                               CustomerService customers) {
+    public FulfillOrderCommand(@NotNull Order order,
+                               @NotNull OrderService orders,
+                               @NotNull OrderEventPublisher events,
+                               @NotNull CustomerService customers) {
         super(order, orders, events);
-        this.customers = customers;
+        this.customers = Objects.requireNonNull(customers, "customers cannot be null");
     }
 
     @Override

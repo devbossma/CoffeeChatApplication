@@ -104,6 +104,26 @@ class OrderCommandTest {
         void name() {
             assertEquals("PlaceOrder", new PlaceOrderCommand(savedUnplacedOrder(), orders, events).name());
         }
+
+        @Test
+        @DisplayName("constructor rejects a null order (AbstractOrderCommand)")
+        void rejectsNullOrder() {
+            assertThrows(NullPointerException.class, () -> new PlaceOrderCommand(null, orders, events));
+        }
+
+        @Test
+        @DisplayName("constructor rejects a null OrderService (AbstractOrderCommand)")
+        void rejectsNullOrders() {
+            assertThrows(NullPointerException.class,
+                    () -> new PlaceOrderCommand(savedUnplacedOrder(), null, events));
+        }
+
+        @Test
+        @DisplayName("constructor rejects a null OrderEventPublisher (AbstractOrderCommand)")
+        void rejectsNullEvents() {
+            assertThrows(NullPointerException.class,
+                    () -> new PlaceOrderCommand(savedUnplacedOrder(), orders, null));
+        }
     }
 
     @Nested
@@ -139,6 +159,13 @@ class OrderCommandTest {
         void name() {
             assertEquals("PrepareOrder",
                     new PrepareOrderCommand(orderAt(OrderStatus.PLACED), orders, events, preparations).name());
+        }
+
+        @Test
+        @DisplayName("constructor rejects a null CoffeePreparationResolver")
+        void rejectsNullPreparations() {
+            assertThrows(NullPointerException.class,
+                    () -> new PrepareOrderCommand(orderAt(OrderStatus.PLACED), orders, events, null));
         }
     }
 
@@ -188,6 +215,28 @@ class OrderCommandTest {
             command.undo();
             assertNull(command.result());
         }
+
+        @Test
+        @DisplayName("constructor rejects a null order")
+        void rejectsNullOrder() {
+            assertThrows(NullPointerException.class,
+                    () -> new PayOrderCommand(null, PaymentProvider.CASH, gateways));
+        }
+
+        @Test
+        @DisplayName("constructor rejects a null PaymentProvider")
+        void rejectsNullProvider() {
+            Order order = orderAt(OrderStatus.READY);
+            assertThrows(NullPointerException.class, () -> new PayOrderCommand(order, null, gateways));
+        }
+
+        @Test
+        @DisplayName("constructor rejects a null PaymentGatewayResolver")
+        void rejectsNullGateways() {
+            Order order = orderAt(OrderStatus.READY);
+            assertThrows(NullPointerException.class,
+                    () -> new PayOrderCommand(order, PaymentProvider.CASH, null));
+        }
     }
 
     @Nested
@@ -223,6 +272,13 @@ class OrderCommandTest {
         void name() {
             assertEquals("FulfillOrder",
                     new FulfillOrderCommand(orderAt(OrderStatus.READY), orders, events, customers).name());
+        }
+
+        @Test
+        @DisplayName("constructor rejects a null CustomerService")
+        void rejectsNullCustomers() {
+            assertThrows(NullPointerException.class,
+                    () -> new FulfillOrderCommand(orderAt(OrderStatus.READY), orders, events, null));
         }
     }
 

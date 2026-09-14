@@ -4,6 +4,9 @@ import dev.saberlabs.coffeechat.adapter.PaymentGatewayResolver;
 import dev.saberlabs.coffeechat.adapter.PaymentProvider;
 import dev.saberlabs.coffeechat.adapter.PaymentResult;
 import dev.saberlabs.coffeechat.model.Order;
+import jakarta.validation.constraints.NotNull;
+
+import java.util.Objects;
 
 /**
  * Pattern 6: COMMAND &mdash; collect payment for the order through the Adapter selected by
@@ -21,10 +24,10 @@ public class PayOrderCommand implements OrderCommand {
     private final PaymentGatewayResolver gateways;
     private PaymentResult result;
 
-    public PayOrderCommand(Order order, PaymentProvider provider, PaymentGatewayResolver gateways) {
-        this.order = order;
-        this.provider = provider;
-        this.gateways = gateways;
+    public PayOrderCommand(@NotNull Order order, @NotNull PaymentProvider provider, @NotNull PaymentGatewayResolver gateways) {
+        this.order = Objects.requireNonNull(order, "order cannot be null");
+        this.provider = Objects.requireNonNull(provider, "provider cannot be null");
+        this.gateways = Objects.requireNonNull(gateways, "gateways cannot be null");
     }
 
     @Override
