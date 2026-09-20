@@ -1,6 +1,8 @@
 package dev.saberlabs.coffeechat.command;
 
-import dev.saberlabs.coffeechat.model.Order;
+import dev.saberlabs.coffeechat.entity.OrderEntity;
+import dev.saberlabs.coffeechat.facade.Actor;
+import dev.saberlabs.coffeechat.service.StaffAccess;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 import dev.saberlabs.coffeechat.observer.OrderEventPublisher;
 import dev.saberlabs.coffeechat.service.OrderService;
@@ -12,38 +14,54 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * Pattern 6: COMMAND &mdash; prepare the order: run the Template Method recipe for its coffee
- * type, then move {@code PLACED -> PREPARING -> READY}. {@code undo()} sends it back to
- * {@code PLACED}.
+ * Runs the Template Method recipe, then {@code PLACED -> PREPARING -> READY} in one transaction.
  *
- * <p>Part 02 splits this into two async barista steps (mark-preparing, mark-ready); here the two
- * transitions happen together so the pattern has a single "prepare" action to expose now.
+ * <p>One transaction is fine here because the recipe is pure in-memory step logging (no waiting,
+ * no I/O), so no row lock is held across real work. It also means a crash mid-command rolls back to
+ * {@code PLACED}, so {@code PREPARING} is never committed by this command. It is still accepted as a
+ * starting status (the {@code PLACED -> PREPARING} hop is skipped) so that restart recovery can
+ * finish a {@code PREPARING} row created by any other means.
  */
 public class PrepareOrderCommand extends AbstractOrderCommand {
 
     private final CoffeePreparationResolver preparations;
     private List<String> preparationLog = List.of();
 
-    public PrepareOrderCommand(@NotNull Order order,
+    public PrepareOrderCommand(@NotNull Long orderId,
                                @NotNull OrderService orders,
                                @NotNull OrderEventPublisher events,
-                               @NotNull CoffeePreparationResolver preparations) {
-        super(order, orders, events);
+                               @NotNull CoffeePreparationResolver preparations,
+                               @NotNull Actor actor,
+                               @NotNull StaffAccess access) {
+        super(orderId, orders, events, actor, access);
         this.preparations = Objects.requireNonNull(preparations, "preparations cannot be null");
     }
 
     @Override
     public void execute() {
-        CoffeePreparationTemplate preparation = preparations.forType(order.baseType());
+        authorize(StaffAccess.STAFF);
+        OrderEntity order = orders.require(orderId);
+        CoffeePreparationTemplate preparation = preparations.forType(order.baseCoffeeType());
         preparation.prepare();
         this.preparationLog = preparation.log();
-        transition(OrderStatus.PREPARING);
+        if (order.status() != OrderStatus.PREPARING) {
+            transition(OrderStatus.PREPARING);
+        }
         transition(OrderStatus.READY);
     }
 
+    /**
+     * Not supported: returning a prepared order to PLACED would put a finished order back in front of
+     * the baristas' queue logic (and it is never re-queued), so it could be prepared twice or stranded.
+     */
     @Override
     public void undo() {
-        restore(OrderStatus.PLACED);
+        throw new UndoNotSupportedException("A prepared order cannot be returned to PLACED");
+    }
+
+    @Override
+    public boolean undoable() {
+        return false;
     }
 
     @Override

@@ -109,7 +109,7 @@ dev.saberlabs.coffeechat
 ├── facade/         CoffeeShopFacade (@Service)
 ├── prototype/      OrderPrototype (@Scope("prototype"))
 ├── template/       CoffeePreparationTemplate + per-coffee subclasses
-├── model/          Order, Customer, Coffee, OrderStatus, LoyaltyTier, Role
+├── model/          Order (immutable snapshot), Coffee, PriceBreakdown, OrderStatus, LoyaltyTier, Role
 ├── controller/      REST controllers (order, chat)
 ├── service/        OrderService, ChatService, NotificationService
 └── repository/      Spring Data JPA repositories (chat, orders — see §9)
@@ -135,9 +135,33 @@ dev.saberlabs.coffeechat
 | Old approach | Spring approach |
 |---|---|
 | `CoffeeShop.open()` manually starts N `Barista` `Thread`s pulling from a `BlockingQueue`-backed `OrderQueue` | Keep `OrderQueue` as a thread-safe `BlockingQueue<Order>`-backed component (the assignment explicitly asks for this shape), but replace manually-started `Thread`s with `@Async` methods on a `Barista` `@Service`, backed by a configured `ThreadPoolTaskExecutor` bean (`@EnableAsync`, a `@Bean TaskExecutor` with a bounded pool + queue capacity). |
-| `Barista.run()` loop blocks on `orderQueue.dequeue()` | An `@Async` `prepareOrder(Order)` method is invoked once per dequeued order (a small `@Scheduled` or event-driven poller pulls from the queue and dispatches), instead of one thread owning an infinite loop. Evaluate both against the assignment's "process orders asynchronously using `@Async`" wording before committing — the poller shape is likely the more idiomatic fit. |
-| Order status change calls `notifyObservers` directly | Order status change publishes `OrderStatusChangedEvent`; a listener sends the "order ready" notification. Async listeners (`@Async @EventListener`) if the notification itself shouldn't block the preparation thread. |
+| `Barista.run()` loop blocks on `orderQueue.dequeue()` | Resolved (CLAUDE.md, PRD 11.1): N `@Async` consumer loops on a bounded `ThreadPoolTaskExecutor`, one per pool slot, each waiting on a *timed* poll of the queue so a stop flag is noticed without an interrupt; not a `@Scheduled` poller. See 8.1 for the as-built behaviour. |
+| Order status change calls `notifyObservers` directly | Order status change publishes `OrderStatusChangedEvent`; a listener sends the "order ready" notification. As built (9.5): the audit listener runs inside the transaction; notification and queueing are `AFTER_COMMIT`. |
 | `CoffeeShop`'s synchronized order list + `AtomicInteger` id counters | Kept conceptually (thread-safe order tracking still needed), but once orders are JPA-backed (§9), persistence itself gives most of the safety; keep in-memory counters only where the DB doesn't already provide an equivalent (e.g. a DB sequence/identity column replaces `orderIdCounter`). |
+
+### 8.1 As built (after Part 03 Step 3)
+
+The table above records the design questions; this is what the code does now.
+
+- **`OrderQueue` carries order ids, not objects** (`BlockingQueue<Long>`): the database is the only
+  holder of order state, so a queued mutable object would be a stale second copy. It keeps a set of
+  waiting ids so an id already queued is not queued twice, and forgets an id the moment it is taken,
+  so a legitimate re-enqueue (the barista's retry path) is never blocked.
+- **`BaristaSupervisor` is a `SmartLifecycle`** (auto-start, phase above the executor's so it stops
+  first) and `Barista` waits on a timed `poll` and re-checks its stop flag, so a context close *and*
+  a Spring-7 test-context pause both stop the loops without a 30s executor-stop stall.
+- **The barista thread is not in a transaction.** Every facade call it makes runs in its own
+  transaction (see §9.5). A lost `@Version` race is retried (3 attempts, each reloading); an order
+  that is gone or no longer preparable is skipped quietly; an unexpected failure is re-enqueued after
+  a short delay, at most 3 attempts in total, then logged at ERROR and left for startup recovery.
+- **Restart recovery** (`OrderRecovery`, on `ApplicationReadyEvent`): the queue is in memory, so on a
+  real startup PLACED and PREPARING rows are re-enqueued oldest first. It is tied to
+  `ApplicationReadyEvent`, not to the supervisor's restartable lifecycle, so a resumed test context
+  does not recover twice. Recovery publishes no events. Correctness rests on idempotent consumption
+  (preparing an order that is no longer PLACED/PREPARING is a quiet skip); the queue's dedupe is an
+  optimisation. `PREPARING` is never committed by `PrepareOrderCommand` (one transaction: the recipe
+  only logs steps), but a `PREPARING` row from any other source is finished, not stranded.
+- **Notifications and the queue happen after commit**, the audit row inside the transaction (§9.5).
 
 ## 9. Chat & Persistence (Part 03)
 
@@ -152,20 +176,30 @@ SQLite.
 
 ### 9.2 Entities
 
-| Entity | Carries forward from | Notes |
-|---|---|---|
-| `ChatSessionEntity` | `chat.ChatSession` (record) | `id`, `customerId`, `baristaId` (nullable), `status` (`WAITING`/`ACTIVE`/`INACTIVE`), `createdAt`. Becomes a real `@Entity` with a generated id instead of a record built by a factory method. |
-| `ChatMessageEntity` | `chat.ChatMessage` (record) | `id`, `type` (`CHAT_MESSAGE`/`SYSTEM_MESSAGE`), `sessionId` (FK), `senderId`, `senderName`, `content`, `timestamp`, `orderId` (nullable). |
-| `OrderEntity` | `models.Order` | Persisted instead of held only in `CoffeeShop`'s in-memory list; `status`, `customer` (FK, not bare id), base coffee type, applied extras (own table/`@ElementCollection`, not a flattened string), price breakdown, `appliedLoyaltyTier` (frozen at placement, never recomputed against the customer's current tier), timestamps. |
-| `CustomerEntity` | `models.Customer` | `id`, `name`, `fulfilledOrders` count — no separate `loyaltyTier` column; tier is derived at read time (`LoyaltyTier.forCount(...)`) so it can't drift from the count. |
-| `UserEntity` *(new)* | — | `id`, `name`, `role` (`CUSTOMER`/`BARISTA`/`MANAGER`). Backs `ChatSessionEntity.baristaId`, which had nothing to reference before. |
-| `PaymentEntity` *(new)* | `adapter/` (Adapter pattern) | 1:1 with `OrderEntity`: gateway used, amount, status (`PENDING`/`PAID`/`FAILED`). Without this the Pay command step has no persisted trace. |
-| `OrderStatusHistoryEntity` *(new)* | — | `orderId`, `fromStatus`, `toStatus`, `changedAt`. The durable audit trail; `OrderInvoker`'s in-memory command history is a recent-activity/undo aid, not this. |
+`CustomerEntity` and `UserEntity` were designed as one merged table, not two — a customer
+placing an order and a barista fulfilling one are both just people with a role, and splitting
+them would have meant `ChatSessionEntity.baristaId`/`customerId` pointing at two different
+tables for what is structurally the same fact. Seven tables, seven entities:
 
-`ChatMessageEntity.sessionId` and `OrderEntity.customerId` are real `@ManyToOne` associations,
-not bare `Long` columns. Indices: `chat_message(session_id, timestamp)` (ordered history load),
-`order_entity(customer_id)` (per-customer queries). Full rationale for all of the above:
-`CLAUDE.md` → "Schema additions needed before Part 03".
+| Entity (table) | Carries forward from | Notes |
+|---|---|---|
+| `UserEntity` (`user_accounts`) | `models.Customer` + *(new)* | The one identity table for every person — customer, barista, or manager — distinguished by `role` (`CUSTOMER`/`BARISTA`/`MANAGER`). `id`, `name`, `role`, `fulfilledOrders` (meaningful for `CUSTOMER` rows only; mutated exclusively via `UserRepository.incrementFulfilledOrders`, an atomic `UPDATE ... SET fulfilled_orders = fulfilled_orders + 1`, not read-modify-write — no `@Version` needed here). No separate `loyaltyTier` column; tier is derived at read time (`LoyaltyTier.forCount(...)`) so it can't drift from the count. Backs `ChatSessionEntity.customerId`/`baristaId` and `OrderEntity.customerId`, none of which had a real entity to reference before Part 03. |
+| `OrderEntity` (`orders`) | `models.Order` | Persisted instead of held only in `CoffeeShop`'s in-memory list. `customer` (`@ManyToOne`, not a bare id), `baseCoffeeType`, `extras` (`@ElementCollection` + `@OrderColumn` — a `List`, not a `Set`: duplicate extras are meaningful and order must survive for Prototype reorder), `status`, `appliedLoyaltyTier` (frozen at placement, never recomputed against the customer's current tier), a four-column price breakdown (`price_base`/`price_extras`/`price_discount`/`price_total`, built directly from `PriceBreakdown` so its own invariant — `base + extras - discount = total` at scale 2 HALF_UP — can never violate the DB's `chk_order_price_consistent` CHECK), `placedAt`/`updatedAt`, and `@Version version` for optimistic locking (the only entity that needs it: async barista threads and REST requests can touch the same order row concurrently). |
+| `order_extras` (no separate entity) | — | The backing table for `OrderEntity.extras`'s `@ElementCollection`; composite PK `(order_id, extra_index)`, `ON DELETE CASCADE`. |
+| `PaymentEntity` (`payments`) | `adapter/` (Adapter pattern) | 1:1 with `OrderEntity` (`UNIQUE(order_id)`, owned by this entity — `OrderEntity` carries no inverse side). Gateway used, amount, status (`PENDING`/`PAID`/`FAILED`), optional `detail`. Inserted once, after the gateway responds, with a terminal status already known — never written `PENDING` first and updated later. |
+| `OrderStatusHistoryEntity` (`order_status_history`) | — | The durable audit trail, written by one dedicated `OrderStatusChangedEvent` listener. `order` (FK), nullable `fromStatus` (null for an order's first, `PLACED` row), `toStatus`, `changedAt`, and a nullable `changedBy` (`UserEntity` FK) — null for an automated/system transition, set for a barista-attributed one. A plain FK can't check the referenced row's role, so BARISTA-only enforcement on `changedBy` is an application-layer rule (Part 03 Step 4), not a DB constraint. `OrderInvoker`'s in-memory command history stays a lightweight recent-activity/undo aid, never this. |
+| `ChatSessionEntity` (`chat_sessions`) | `chat.ChatSession` (record) | `customer` (FK, not nullable), `barista` (FK, nullable until matched), `status` (`WAITING`/`ACTIVE`/`INACTIVE`), `createdAt`. A partial unique index (`customer_id` where `status <> 'INACTIVE'`) enforces at most one non-`INACTIVE` session per customer at the DB level, alongside the equivalent app-level check in `ChatService.startChat()`. |
+| `ChatMessageEntity` (`chat_messages`) | `chat.ChatMessage` (record) | `session` (FK), `type` (`CHAT_MESSAGE`/`SYSTEM_MESSAGE`), nullable `sender` (FK — null for a `SYSTEM_MESSAGE`), `senderName` (kept as its own persisted column even though derivable from `sender`, since a later display-name change shouldn't rewrite what an old message shows), `content` (capped at 2000 chars via `chk_chat_message_content_length`, matched by a `@Size(max = 2000)` on the Part 03 Step 6 REST DTO), `sentAt`, nullable `order` (FK). |
+
+Every FK above is a real `@ManyToOne`/`@OneToOne` association (`fetch = LAZY, optional = false`
+where the relationship is mandatory), not a bare `Long` column. Indices beyond each table's PK:
+`orders(customer_id)`, `orders(status)` (restart-recovery: re-finding in-flight orders),
+`order_status_history(order_id, changed_at)`, `chat_sessions(customer_id)`,
+`chat_sessions(status)`, `chat_messages(session_id, sent_at)` (ordered history load). Full
+rationale for all of the above, including every constraint and index decision:
+`CLAUDE.md` → "Schema additions needed before Part 03"; the full DDL lives in
+`src/main/resources/db/migration/V1__init_schema.sql`, the schema's single source of truth
+(`spring.jpa.hibernate.ddl-auto=validate`, not `update`).
 
 Repositories are plain Spring Data JPA interfaces
 (`ChatMessageRepository extends JpaRepository<ChatMessageEntity, Long>`,
@@ -198,6 +232,212 @@ management. That whole class disappears; Spring Boot's
 | `POST` | `/api/chat/sessions/{id}/messages` | Send a chat message / order command |
 | `GET` | `/api/chat/sessions/{id}/messages` | Load chat history |
 
+### 9.5 Order persistence and lifecycle (Part 03 Step 3, as built)
+
+**Domain vs entity.** `OrderEntity`/`UserEntity` are the only holders of order and customer state.
+`model.Customer` and every in-memory holder (the maps and counters in `OrderService` /
+`CustomerService`) are gone. `model.Order` is an **immutable snapshot record** built by `OrderMapper`
+inside the read transaction (extras copied out while the session is open; the coffee description is
+rebuilt via Factory + Decorator, never stored). Transition legality lives on
+`OrderEntity.transitionTo`. `OrderEntity.customerId()` is a read-only mapped column so listing orders
+does not initialise a lazy customer proxy per order.
+
+**Transactions.** `OrderInvoker` runs every command in exactly one `TransactionTemplate` transaction
+and records history/undo only *after* commit (a commit-time `@Version` failure is not recorded).
+Commands hold order ids and load the managed entity inside `execute()`. `@Version` conflicts: the
+REST layer maps `OptimisticLockingFailureException` to **409** (no auto-retry: the client should
+re-read); the barista retries and skips as in §8.1. **Known limitation:** `placeOrder` derives the
+customer's loyalty tier just before its command runs, so a fulfilment committing in that gap can make
+the frozen tier stale by one (the tier and price stay consistent with each other).
+
+**Events and phases (single publish point).** `OrderEventPublisher` is the only publisher, and it
+throws if no transaction is active (a `@TransactionalEventListener` silently drops an event published
+outside one). One event, two listener kinds:
+
+| Listener | Phase | Why |
+|---|---|---|
+| `OrderStatusHistoryListener` | plain `@EventListener`, `MANDATORY` | the audit row commits or rolls back with the status change and cannot disagree with it; if the audit write fails, the status change rolls back |
+| `OrderNotificationListener` | `AFTER_COMMIT` | never announce a change that rolled back; entry dropped when the order is FULFILLED/CANCELLED |
+| `OrderQueueDispatcher` | `AFTER_COMMIT`, fresh placement only (`from == null`) | a barista can never dequeue an uncommitted order; an undo restoring PLACED cannot re-queue |
+
+An `AFTER_COMMIT` listener must not touch the database (it would need its own `REQUIRES_NEW`).
+`changed_by` is NULL in Step 3; `OrderCommand.actorUserId()` and the event's `actorUserId` are the
+seam Step 4 fills (with the BARISTA-only check).
+
+**Payment.** The gateway declining is a **FAILED `PaymentResult`, not an exception**: the command
+commits a FAILED row (throwing would roll it back; a `REQUIRES_NEW` step needs a second pooled
+connection per in-flight payment). The `payments` row is the order's *current* payment state
+(`UNIQUE(order_id)`): a FAILED row is updated in place by a retry (only the latest failure is kept, no
+attempt log), a PAID row is final. Only a READY order is payable. The amount is always the order's
+persisted total (the adapter's reported amount is asserted equal). Concurrent payers are serialised by
+a pessimistic row lock on the order taken **before** the gateway call, so the second sees PAID and is
+rejected without being charged (409). `facade.processOrder` stops on a FAILED payment and returns an
+`OrderOutcome`.
+
+*The gateway call runs under that row lock, by design.* That is acceptable for the in-process simulated
+gateways here and would need a redesign for a real network gateway (charge outside the lock, or an
+idempotency key). A payer blocked on the lock holds a pooled connection, so many concurrent payers of
+one order can consume the pool; the wait is therefore bounded by `coffeeshop.payment-lock-timeout-ms`
+(default 5000; a PostgreSQL `lock_timeout` scoped to the transaction), after which the payer gets a
+**409** (`OrderStateConflictException`) instead of waiting forever.
+
+**Fulfilment.** Requires READY **and a PAID payment**, then increments `fulfilled_orders` with an atomic
+SQL update in the same transaction, after the status change has been flushed (so the `@Version` check
+fires first): exactly once per order. Unpaid fulfilment is 409 because loyalty tiers derive from
+`fulfilled_orders`. **Known limitation:** cancelling an already-paid order has no refund flow (no real
+processor, §4).
+
+**Undo is a limited convenience, not a general reversal.** Only a placement that is still PLACED (it
+cancels) and the cancellation of a READY order can be undone. Executing a command that cannot be undone
+(payment, fulfilment, preparation) is a **barrier**: `OrderInvoker` empties its undo stack, so the
+stack never jams behind an un-undoable command, `undoLast()` then returns nothing, and later
+undoable commands work again; the stack is also capped. Undo of Pay, Fulfil and Prepare (and of
+cancelling a PLACED order) throws `UndoNotSupportedException` (409): reversing them has effects outside
+the order row (a payment, the loyalty count, the queue) that are not reversed.
+
+**Reorder (Prototype)** rebuilds from the persisted base coffee and the ordered extras list (duplicates
+and order preserved by `@OrderColumn`), never copies id/status/timestamps/price/tier, and ends in
+`facade.placeOrder`, so the clone is priced at the customer's *current* tier and queued like any order.
+
+### 9.6 Role enforcement (Part 03 Step 4, as built)
+
+`Role` (`CUSTOMER` / `BARISTA` / `MANAGER`) has one real enforced boundary. It is a plain
+service-layer check (`StaffAccess`); there is no Spring Security and no authentication (§4).
+
+**Actor model.** Every facade method that changes order status takes an `Actor`: either a claimed user
+id (`Actor.user(id)`) or `Actor.SYSTEM`, trusted in-process automation (the async barista loops,
+`processOrder`, tests) that skips the role check and is never recorded as a person. The actor-less
+signatures were removed rather than kept as overloads, so there is no unenforced back door. `Actor.SYSTEM`
+is a public constant, so a guard test scans the `controller` package (source and bytecode) and fails
+the build if any controller references it: an endpoint can never act as the system. A missing identity
+must never silently become the system (`Actor.user(null)` is rejected).
+
+**Who may do what.**
+
+| Operation | Allowed | Otherwise |
+|---|---|---|
+| prepare, fulfil, cancel, undo (status transitions) | BARISTA, MANAGER, `SYSTEM` | CUSTOMER (even the order's own): **403** |
+| pay | staff (BARISTA, MANAGER), the order's **own** CUSTOMER, `SYSTEM` | a different customer: **403**, before the gateway is called |
+| place | CUSTOMER only (`CustomerNotFoundException` for any other user id) | 404 |
+| reorder | see below | |
+
+The check runs inside the command's own transaction, before anything changes, so it is atomic with the
+change and a rejected action leaves no trace (proven for prepare, fulfil, cancel and pay: status, audit
+rows, payments, `fulfilled_orders`, notifications and the gateway are untouched).
+
+**`changed_by` rule.** Only a BARISTA is ever recorded; it is NULL for the system and for manager-driven
+changes. `OrderStatusHistoryListener` (the one place it is written) verifies the role in the same
+transaction and refuses anything else, rolling the change back, because a foreign key cannot check the
+referenced user's role; its message names the user id and role. An undo is attributed to whoever asked for
+it, not to whoever ran the original command.
+
+**HTTP mapping.** No actor or an unknown user id: **401** (`UnknownActorException`, the caller cannot be
+identified). A known user whose role does not permit the action: **403** (`RoleNotAllowedException`).
+Unknown order: 404. Illegal transition, unpaid fulfilment, already-paid or not-READY payment, unsupported
+undo, lost `@Version` race: 409. There is no REST endpoint for the transitions yet (Step 6); the mapping
+is in place and tested for it. The caller's identity will arrive as a user id (an `X-User-Id` header),
+not as credentials.
+
+**Reorder.** The clone belongs to the *original order's customer*. Since Step 6 the caller is identified
+(`X-User-Id`) and only that customer, or staff, may reorder (see §9.8).
+
+**Creating staff.** `StaffService.createBarista` / `createManager` back `POST /api/staff` (MANAGER only, Step 6);
+the first manager is seeded from one configuration property (§9.8).
+
+**Known limitations and Step 6 notes.**
+- Customers cannot cancel their own order through the API yet (only staff can).
+- `undoLastAction` and cancel are staff-only; a customer cannot undo a placement.
+- Bootstrapping (solved in Step 6): a manager-guarded staff-creation endpoint plus an initial manager seeded from
+  `coffeeshop.bootstrap.manager-name` (off unless set; on in the `local` profile).
+- A MANAGER's actions are not attributable in the audit trail (`changed_by` is NULL by rule).
+
+### 9.7 Chat core (Part 03 Step 5, as built)
+
+The chat *use cases* exist and are tested (`ChatService`); the REST controllers for them are Step 6. §9.3 is
+the intended surface; this section is what was actually built and why.
+
+**Pieces.**
+
+| Class | Job |
+|---|---|
+| `OrderCommandParser` | Pure. Decides whether a message is an order command and parses it. `/order` must be the first token (case-insensitive); `order latte ...`, `/orders`, `/ordering`, `please /order latte` are small talk. Unknown coffee, missing coffee and *all* unknown extras are reported. Duplicate extras are kept in typed order. |
+| `TextRules` | One definition of whitespace for everything typed: `Character.isWhitespace` plus U+00A0, U+2007, U+202F and the other Unicode space separators. Used by the parser and by message validation (a message of only Unicode spaces is blank; the database `btrim` CHECK only trims ASCII spaces and is the backstop, not the gate). |
+| `BaristaQueue` | In-memory, ids only, no I/O inside its lock: FIFO of waiting sessions and ready baristas. It *decides* (returns `Match`es); it never touches the database. |
+| `ChatSessionStore` | The **only writer of `chat_sessions` and `chat_messages`**. One `TransactionTemplate` transaction per method; status changes are conditional `UPDATE`s (`activateIfWaiting`, `endIfNotInactive`), so two racing writers cannot both win. |
+| `ChatMatchmaker` | Connects the two: queue decides, store makes it durable, and it compensates when they disagree. Not `@Transactional`, on purpose. |
+| `ChatRecovery` | On `ApplicationReadyEvent`: ACTIVE sessions restore their barista as BUSY, WAITING sessions rejoin oldest first. Idempotent, per-row failures logged and skipped, returns void. |
+| `ChatService` | Authorization plus orchestration; the only entry point the controllers will use. |
+
+**Matching invariants.**
+- A barista is READY, BUSY or absent, never two. Registering twice is a no-op; registering while BUSY cancels a pending "go offline when free".
+- Every queue operation ends by pairing the *front* waiting session with the *front* ready barista, so the oldest customer always meets the longest-ready barista. Ending a WAITING session removes it from the line.
+- The database backs the queue: `uq_chat_sessions_active_customer` (one non-INACTIVE session per customer) and `uq_chat_sessions_active_barista` (V2: one ACTIVE session per barista).
+- `chat_sessions.status` is written only through `ChatSessionStore`, and only from `ChatMatchmaker` (open, match, end).
+
+**Failure handling of the durable step** (the queue decision is tentative until the write commits):
+
+| Failure | Handling |
+|---|---|
+| Session no longer WAITING (ended in between) | Match dropped; barista back to the front of the ready line and paired with the next waiting customer, in one queue operation. |
+| Barista can never serve (`ChatBaristaUnavailableException`: no such user, not a BARISTA, already ACTIVE elsewhere) | Permanent: barista dropped from the queue; the customer keeps their place at the front. |
+| Anything else (transient) | EVERY tentative pair of the batch goes back to the front of both lines in the original order (nothing stays BUSY in memory without a committed ACTIVE row), the error is logged and **not rethrown**. The next operation starts with `pairPending()`, so no timer is needed and a newcomer cannot overtake the failed pair. After `chat.match.max-attempts` (default 3) consecutive failures of the same pair it is treated as permanent (barista dropped, ERROR logged with both ids, the customer paired with the next ready barista), so a poison pair cannot block the head of both lines forever. |
+
+**Authorization** (plain service-layer checks, as §9.6): `Actor.SYSTEM` is rejected everywhere (401). Only a
+CUSTOMER starts a chat; only a BARISTA registers as ready/offline; a session's customer, its barista or any
+MANAGER may end it or read its history; only its two participants may post, and only while it is ACTIVE.
+A MANAGER may not post. A barista's message starting with `/order` is plain text: only a customer's message
+is parsed.
+
+**Messages.** Content is stripped of Unicode spaces, must not be blank, at most 2000 characters (`InvalidChatMessageException`, 400; a dedicated type, and there is deliberately no blanket `IllegalArgumentException` -> 400 mapping, which would turn programming errors into client errors). The ACTIVE and participant rules are checked in `ChatService` (fast, friendly) and **again inside the insert's own transaction under a `FOR SHARE` row lock** (`ChatSessionStore.addMessage`), so a session that ends, or a barista who is un-assigned, between the two cannot receive a message. SYSTEM messages are exempt (the `/order` confirmation must not be lost). History is ordered by `sent_at`, then `id`.
+
+`ChatService` refuses to run inside a caller's transaction (`IllegalStateException`): its steps are separate transactions by design and an outer `@Transactional` would silently merge them.
+
+**The `/order` path (Flow C)** is three independent transactions: T1 stores the customer's message (always kept);
+T2 is `CoffeeShopFacade.placeOrder` (the only door into the order lifecycle); T3 stores a SYSTEM confirmation
+linked to the order, retried up to 3 times, and if it still fails the order stands, an ERROR is logged, and the
+result still carries the order id (reply null). A refused order (shop closed, off the menu, malformed command)
+is *not* an error to the caller: the message was accepted and the reply says why nothing was ordered.
+
+**HTTP mapping** (`RestExceptionHandler`): already-open chat 409 (body carries `existingSessionId`), session not
+ACTIVE 409, not a participant 403, unknown session 404, invalid message 400, role 403, unknown actor 401.
+
+**Known limitations.**
+- **No idempotency key.** A retried identical `/order` message is a new message and places a second order. What is guaranteed: one accepted message stores exactly one CHAT_MESSAGE and places at most one order, even when T3 is retried.
+- Stale sessions never expire: a customer who walks away stays WAITING/ACTIVE until someone ends the session (and, with one open session per customer, cannot start another).
+- Ready baristas are not recoverable after a restart (nothing durable says who was ready) and must register again.
+- After a transient write failure a pair waits for the next chat operation rather than a timer (bounded by the retry cap above).
+- `sent_at` is the application clock, so cross-transaction ordering is best-effort; the id breaks same-instant ties.
+
+**Step 6 (done, §9.8).** The "my active session" read for baristas and customers, staff creation and the
+property-seeded initial manager were built in Step 6.
+
+### 9.8 REST surface (Part 03 Step 6, as built)
+
+The user-facing description, with a verified curl walkthrough and the status-code table, is
+[`docs/API.md`](docs/API.md); this section records the decisions.
+
+- **Identity.** `X-User-Id` is resolved to an `Actor` by `web/ActorArgumentResolver`: a *claimed* identity, not
+  authentication (section 4). It never produces `Actor.SYSTEM`; `ControllerActorGuardTest` enforces that, and also
+  that no controller constructs an `Actor` itself or reaches past the facade to the command/order/payment/staff
+  layers. Roles are then enforced by the facade and services on that actor.
+- **Ownership.** A customer may place, read, reorder and pay only their own orders; staff may for anyone. Order of
+  checks is 401, then 404, then 403 (an authenticated caller can probe order-id existence; documented).
+- **Undo is not exposed.** The undo stack is global, so it would let any staff member cancel anyone's last order.
+- **Shop open/close and staff creation require a MANAGER.** The first manager is seeded from ONE property,
+  `coffeeshop.bootstrap.manager-name` (unset = never seed; set in `application-local.properties`;
+  idempotent; the id is logged at INFO because it is the credential).
+- **Payment.** 200 when paid; 402 with the payment result when the gateway declines; 409 for not READY, already
+  paid or an unpaid fulfil.
+- **Errors.** One `RestExceptionHandler` (extending `ResponseEntityExceptionHandler`), `ProblemDetail` everywhere.
+  There is deliberately no blanket `IllegalArgumentException` -> 400; only `InvalidChatMessageException` and bean
+  validation are client errors. `ExceptionMappingCoverageTest` fails if a domain exception is neither mapped nor
+  declared internal.
+- **Chat reads.** `GET /api/chat/sessions/mine` (a customer's own session with the barista's name, a barista's
+  active one with the customer's), and paged history (`page` from 0, `size` default 50, max 200).
+- **Test tiers.** Controller tests share ONE `@WebMvcTest` slice (`AbstractWebMvcTest`), so the whole suite builds
+  three Spring contexts: the full application, the `@DataJpaTest` slice and that one web slice. A new controller
+  dependency is added to that base class as one more `@MockitoBean`.
+
 ## 10. Testing (Part 04)
 
 - **Unit tests** (JUnit 5 + Mockito): one test class per service/component,
@@ -216,6 +456,66 @@ management. That whole class disappears; Spring Boot's
   coverage gate, not just "some tests exist") — exact tool/threshold
   (JaCoCo, as before) to be wired once the project is scaffolded.
 
+### 10.1 What Part 03 covers end to end (as built)
+
+The plan above is the original intent; this is what exists. `mvn clean verify` runs everything and enforces the
+80% per-package line-coverage gate.
+
+| Tier | What | Where |
+|---|---|---|
+| Unit | pure logic and failure handling with collaborators faked: parser, `BaristaQueue`, `ChatMatchmaker` failure paths, `ChatService` confirmation retries, resolvers, the `X-User-Id` resolver, the bootstrap | `*Test` next to each class |
+| Persistence | every repository against real Postgres (`@DataJpaTest`, singleton Testcontainers): constraints asserted by SQLSTATE and constraint name, custom queries, locks | `repository/*Test` |
+| Web slice | every controller, valid / 400 / 401 / 403 / 404 / 409 (and 402), services mocked, ProblemDetail bodies; one shared slice (`AbstractWebMvcTest`) | `controller/*Test` |
+| Integration | full context, real database, real transactions and real `AFTER_COMMIT` listeners: facade, roles, concurrency races (barrier-based), chat matching, recovery | `AbstractIntegrationTest` subclasses |
+| End to end | over HTTP through the real controllers, real facade, real asynchronous baristas, real Postgres (`e2e/EndToEndFlowsTest`) | see below |
+| Documentation | `docs/API.md`'s curl walkthrough is parsed and executed; a mismatch fails the build (`e2e/ApiDocWalkthroughTest`) | |
+
+`EndToEndFlowsTest` asserts the HTTP answer **and** the rows left behind (orders, `order_extras`, payments,
+`order_status_history` including `changed_by`, chat sessions and messages, `fulfilled_orders`) for: the order
+lifecycle; the chat flow (match, `/order` with a persisted confirmation linked to the real order id, paged
+history, end and rematch); reorder of a `[MILK, MILK, SUGAR]` order at the customer's current tier; loyalty (the
+tier rises for the next order only); failure paths (unpaid fulfil 409, wrong role 403, missing/unknown identity 401,
+unknown order 404, payment decline 402 then a CASH retry on the same payments row, closed shop 409 for an order and
+for a chat `/order`, duplicate chat start 409, illegal transition 409, malformed input 400); concurrency (two
+simultaneous pays of one order, two customers and two baristas arriving together); and restart recovery.
+
+The whole suite builds **three** Spring contexts: the full application (which also provides `MockMvc`, via
+`@AutoConfigureMockMvc` on the shared integration base), the `@DataJpaTest` slice, and the single shared web slice.
+Every test cleans the database before and after itself and stops the baristas in a `finally`, so tests do not
+depend on order. Asynchronous effects are awaited with Awaitility; there are no sleeps.
+
+### 10.2 Known limitations of Part 03 (one place)
+
+Design decisions that are deliberate, and gaps that are known. None is hidden elsewhere.
+
+**Identity and access**
+- `X-User-Id` is a claimed identity, not authentication; ids are guessable sequential numbers (§4, `docs/API.md`).
+- 404 is answered before 403, so an authenticated caller can probe whether an order id exists.
+- Customers cannot cancel their own order; only staff can. Undo is deliberately not exposed over REST.
+- A MANAGER's actions are not attributable in the order audit trail (`changed_by` is NULL by rule).
+- Manager-only endpoints depend on the seeded first manager (`coffeeshop.bootstrap.manager-name`).
+
+**Orders and payments**
+- No idempotency key: a retried `POST /api/orders` or `/order` chat message places a second order.
+- No refund when a paid order is cancelled; only the latest payment failure is kept (the row is updated in place).
+- The loyalty tier is read just before the placement transaction, so a fulfilment that commits in that gap can
+  leave the frozen tier one order stale; the next order picks the new tier up.
+- The in-memory invoker history/undo stack is a recent-activity aid only, not durable and global across users.
+- An `AFTER_COMMIT` enqueue onto a full order queue can block the committing thread until a barista frees a slot.
+
+**Chat**
+- Stale sessions never expire: an abandoned WAITING/ACTIVE session stays until someone ends it, and a customer
+  can have only one open session.
+- Ready baristas are not remembered across a restart and must register again (sessions themselves are recovered).
+- After a transient write failure a matched pair waits for the next chat operation instead of a timer (bounded by
+  a retry cap that then drops the barista).
+- `sent_at` is the application clock, so ordering across concurrent transactions is best effort; the id breaks ties.
+
+**Test scope**
+- The real gateways never decline a normal amount, so the end-to-end decline test swaps the PayPal gateway of the
+  real resolver for one with a tiny balance and restores it afterwards.
+- Load, soak and multi-instance behaviour are not tested: the queues are in-memory and single-instance by design.
+
 ## 11. Resolved decisions (previously open questions)
 
 All four were open at scaffold time and are now settled — full rationale for each lives in
@@ -223,8 +523,9 @@ All four were open at scaffold time and are now settled — full rationale for e
 the PRD and `CLAUDE.md` don't drift apart.
 
 1. **Async dispatch shape.** N `@Async` consumer loops (pool size from a `ThreadPoolTaskExecutor`
-   bean), started once via `@EventListener(ApplicationReadyEvent.class)`, blocking on
-   `orderQueue.take()` — not a `@Scheduled` poller.
+   bean), launched once by `BaristaSupervisor` (a `SmartLifecycle` auto-start, so a paused-then-resumed
+   context restarts them), waiting on a timed `orderQueue.poll(...)` so a stop flag is noticed
+   without an interrupt — not a `@Scheduled` poller.
 2. **Strategy bean keying.** Each `PricingStrategy` exposes `supportedTier()`; a
    `PricingStrategyResolver` builds an `EnumMap<LoyaltyTier, PricingStrategy>` from the injected
    `List<PricingStrategy>` — no bean-name string matching, no per-tier qualifier annotation.

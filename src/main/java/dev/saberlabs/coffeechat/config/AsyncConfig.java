@@ -16,10 +16,12 @@ import java.util.Objects;
  *
  * <p>Sized to exactly {@link CoffeeShop#baristaPoolSize()} (core == max): every barista loop is a
  * long-lived blocking task for the lifetime of the app, so there is no queueing of overflow work
- * on this executor and no reason for elastic sizing. {@code setWaitForTasksToCompleteOnShutdown(false)}
- * means a context shutdown interrupts a barista parked in {@code OrderQueue.take()} instead of
- * waiting on it forever &mdash; though the real fix for the graceful-shutdown stall this executor
- * would otherwise sit through is {@code BaristaSupervisor.onContextClosed()}, see its javadoc.
+ * on this executor and no reason for elastic sizing. This executor's own {@code SmartLifecycle}
+ * stop waits for running tasks, and the barista loops are deliberately long-lived, so the loops
+ * must be told to stop <em>before</em> that wait begins: {@code BaristaSupervisor} is a
+ * {@code SmartLifecycle} with a higher (earlier-stopping) phase, and {@code Barista} exits its
+ * loop on a timed poll rather than a blocking {@code take()} &mdash; see the supervisor's javadoc
+ * for the root cause. {@code setWaitForTasksToCompleteOnShutdown(false)} remains as a backstop.
  *
  * <p>{@code setDaemon(true)} is defensive insurance, not a fix: even if some future change
  * reintroduces a shutdown path that fails to interrupt these threads, a daemon thread can never

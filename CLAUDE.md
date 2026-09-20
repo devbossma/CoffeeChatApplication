@@ -72,30 +72,69 @@ Concretely:
 | Live chat matching (who's waiting/free) | `BaristaQueue`, in-memory (correct per PRD §9.3 — it's coordination, not history) | Anything other than `BaristaQueue` writing `ChatSessionEntity.status` |
 | Notifications | One publish point (the service/Command on a confirmed transition), one `@EventListener` | The async Barista callback *also* independently firing a notification for the same transition |
 
-### Schema additions needed before Part 03 (on top of PRD §9.2)
+### Schema (implemented in Part 03 Step 2, on top of PRD §9.2)
 
-- **No entity backs "barista" today** — `ChatSessionEntity.baristaId` references nothing. Add a
-  `UserEntity` (id, name, `role`: CUSTOMER/BARISTA/MANAGER — single-table, `Role` as
-  discriminator); `baristaId`/`customerId` become real foreign keys, not bare `Long`s.
-- **No structured order line items** — an order needs its base coffee type, the applied extras
-  (`order_extra(order_id, extra_type)`, or an `@ElementCollection`), and a price breakdown
-  (base + extras − discount = total) — not one flattened description string. Reorder/Prototype
-  needs this structure to reconstruct an equivalent order; a string can't be cloned meaningfully.
-- **`OrderEntity.appliedLoyaltyTier`** — missing; see the source-of-truth table above.
-- **No `PaymentEntity`** — the Adapter pattern simulates PayPal/Stripe/Cash but nothing persists
-  which gateway was used, an amount, or a status (`PENDING`/`PAID`/`FAILED`). Add one, 1:1 with
-  `OrderEntity`.
-- **No `OrderStatusHistoryEntity`** — durable audit trail; see the source-of-truth table above.
-- **Bare FK columns** — `ChatMessageEntity.sessionId` and `OrderEntity.customerId` should be real
-  `@ManyToOne` associations, not `Long` columns, for referential integrity and JPQL joins.
-- **Missing indices** — `chat_message(session_id, timestamp)` for the ordered history load;
-  `order_entity(customer_id)` for per-customer queries (tier derivation, reorder lookup).
+Seven tables, all in `src/main/resources/db/migration/V1__init_schema.sql`
+(`spring.jpa.hibernate.ddl-auto=validate` — Flyway owns the schema, entities are checked against
+it, not the other way around). `CustomerEntity` and `UserEntity` were merged into one
+`UserEntity`/`user_accounts` table rather than kept separate — see PRD §9.2 for the full
+entity-by-entity breakdown and the reasoning. Highlights that weren't obvious up front:
+
+- `UserEntity` (`user_accounts`) backs `ChatSessionEntity.baristaId`/`customerId` and
+  `OrderEntity.customerId`, all real foreign keys now, not bare `Long`s. `fulfilledOrders` lives
+  here, mutated only via `UserRepository.incrementFulfilledOrders` (atomic `UPDATE ... SET
+  fulfilled_orders = fulfilled_orders + 1`) — never a read-modify-write on the entity, which is
+  also why this table needs no `@Version`.
+- `OrderEntity` gets structured extras (`order_extras`, an `@ElementCollection` with
+  `@OrderColumn` — a `List`, since duplicate extras are meaningful and order must survive for a
+  Prototype reorder) and a four-column price breakdown (`price_base`/`price_extras`/
+  `price_discount`/`price_total`) instead of one flattened description string, plus
+  `appliedLoyaltyTier` (frozen at placement; see the source-of-truth table above) and `@Version`
+  for optimistic locking — the only table that needs it, since async barista threads and REST
+  requests can touch the same order row concurrently. `chk_order_price_consistent` (a DB CHECK
+  that `price_base + price_extras - price_discount = price_total`) can never be violated by
+  legitimately-built rows because `OrderEntity`'s constructor takes a `PriceBreakdown` directly,
+  which already enforces that invariant at scale 2 HALF_UP in its own compact constructor — the
+  rounding-boundary case is covered explicitly in `OrderRepositoryTest`.
+- `PaymentEntity` (`payments`, 1:1 with `orders` via `UNIQUE(order_id)`) persists which gateway
+  was used, an amount, and a status (`PENDING`/`PAID`/`FAILED`) — none of which the Adapter
+  pattern wrote down anywhere before.
+- `OrderStatusHistoryEntity` (`order_status_history`) is the durable audit trail — see the
+  source-of-truth table above. Its `changed_by` column (nullable FK to `user_accounts`) is null
+  for an automated/system transition and set for a barista-attributed one; a plain FK can't check
+  the referenced row's role, so BARISTA-only enforcement on it is an application-layer rule,
+  deferred to Part 03 Step 4, not a DB constraint.
+- Every association above is a real `@ManyToOne`/`@OneToOne` (`fetch = LAZY`, `optional = false`
+  where mandatory), not a bare `Long` column. Indices beyond each table's own PK:
+  `orders(customer_id)`, `orders(status)` (so a restart can re-find in-flight orders),
+  `order_status_history(order_id, changed_at)`, `chat_sessions(customer_id)`,
+  `chat_sessions(status)`, `chat_messages(session_id, sent_at)` (the ordered history load) — plus
+  a partial unique index, `chat_sessions(customer_id) WHERE status <> 'INACTIVE'`, enforcing at
+  most one non-`INACTIVE` session per customer at the DB level.
+
+**Testcontainers gotcha hit while building the `@DataJpaTest` suite for this schema:** the
+"shared static container across a whole test class hierarchy" pattern
+(`@Testcontainers` + `@Container` on a `static` field in an abstract base class, six concrete
+`@DataJpaTest` subclasses extending it) is only reliably shared *within* one test class per
+Testcontainers' own docs — across multiple classes, its JUnit5 extension was observed stopping
+the container as soon as the first subclass's test store closed (a
+`CloseableResource`-vs-`AutoCloseable` store-scoping incompatibility between recent JUnit5 and
+this Testcontainers version), silently starting a replacement on a new port for the next class
+while the already-built, cached Spring `ApplicationContext` kept the stale port — every later
+test then hung for HikariCP's full 30s connection-acquisition timeout before failing. Fixed by
+switching `AbstractRepositoryTest` to Testcontainers' documented "singleton container" pattern:
+start the container manually in a `static` initializer block, with no `@Testcontainers`/
+`@Container` lifecycle management at all (Ryuk still reaps it on JVM exit). Worth checking for
+first if a future `@DataJpaTest` suite starts seeing intermittent `CannotCreateTransactionException`/
+connection-refused failures partway through a run that passes fine in isolation.
 
 ### Resolving PRD §11's open questions
 
 1. **Async dispatch shape (§11.1) — resolved.** N `@Async` consumer loops (pool size from a
-   `ThreadPoolTaskExecutor` bean), each started once via
-   `@EventListener(ApplicationReadyEvent.class)`, blocking on `orderQueue.take()`. This is the
+   `ThreadPoolTaskExecutor` bean), each launched once by
+   `BaristaSupervisor`, a `SmartLifecycle` auto-start (not an `ApplicationReadyEvent` listener: a
+   resumed, previously paused test context only restarts lifecycle beans), waiting on a *timed*
+   `orderQueue.poll(...)` so a stop flag is noticed without an interrupt. This is the
    closest Spring-idiomatic match to the old `Barista.run()` loop, and avoids the latency/busy-work
    a `@Scheduled` poller re-checking an empty queue would add.
 2. **Strategy bean keying (§11.2) — resolved.** Each `PricingStrategy` exposes

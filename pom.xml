@@ -36,6 +36,21 @@
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
 
+        <!-- Part 03: versioned schema migrations. Entities are checked against this DDL
+             (spring.jpa.hibernate.ddl-auto=validate) rather than the DDL being generated from
+             entities: reviewable SQL, not implicit schema magic. Coordinates verified against
+             the parent BOM with `mvn dependency:resolve` before adding (Spring Boot 4 renamed
+             this to its own starter module, same pattern as spring-boot-webmvc-test in Part 02). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-flyway</artifactId>
+        </dependency>
+        <!-- Flyway 10+ split database-specific support out of flyway-core; also BOM-managed. -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
         <!-- Bean Validation for REST request DTOs (order placement, chat messages) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -85,6 +100,28 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Part 03 Step 3: bounded waiting for the async barista pipeline in integration tests,
+             instead of fixed sleeps. Version managed by the parent BOM. -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Part 03: the @DataJpaTest slice. Same Spring Boot 4 module split as webmvc-test
+             above; verified via `mvn dependency:resolve` before adding, not assumed. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-data-jpa-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- @AutoConfigureTestDatabase now lives here, not in spring-boot-data-jpa-test. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-jdbc-test</artifactId>
             <scope>test</scope>
         </dependency>
 

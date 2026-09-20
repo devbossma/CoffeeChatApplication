@@ -1,13 +1,16 @@
 package dev.saberlabs.coffeechat.service;
 
-import dev.saberlabs.coffeechat.model.Customer;
+import dev.saberlabs.coffeechat.entity.UserEntity;
+import dev.saberlabs.coffeechat.facade.CustomerNotFoundException;
 import dev.saberlabs.coffeechat.model.LoyaltyTier;
-import org.junit.jupiter.api.BeforeEach;
+import dev.saberlabs.coffeechat.model.Role;
+import dev.saberlabs.coffeechat.support.AbstractIntegrationTest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-
-import java.util.NoSuchElementException;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.transaction.IllegalTransactionStateException;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -15,39 +18,37 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @DisplayName("CustomerService")
-class CustomerServiceTest {
+class CustomerServiceTest extends AbstractIntegrationTest {
 
-    private CustomerService customerService;
-
-    @BeforeEach
-    void setUp() {
-        customerService = new CustomerService();
-    }
+    @Autowired CustomerService service;
+    @Autowired TransactionTemplate tx;
 
     @Nested
     @DisplayName("create()")
     class CreateTests {
 
         @Test
-        @DisplayName("creates a customer with an id and 0 fulfilled orders")
-        void createsCustomer() {
-            Customer created = customerService.create("Alice");
-            assertNotNull(created.id());
-            assertEquals(0, created.fulfilledOrders());
-        }
+        @DisplayName("persists a CUSTOMER with 0 fulfilled orders and a derived REGULAR tier")
+        void creates() {
+            UserEntity created = service.create("Alice");
 
-        @Test
-        @DisplayName("assigns distinct ids to successive customers")
-        void distinctIds() {
-            Customer a = customerService.create("Alice");
-            Customer b = customerService.create("Bob");
-            assertTrue(!a.id().equals(b.id()));
+            assertNotNull(created.id());
+            UserEntity reloaded = users.findById(created.id()).orElseThrow();
+            assertEquals(Role.CUSTOMER, reloaded.role());
+            assertEquals(0, reloaded.fulfilledOrders());
+            assertEquals(LoyaltyTier.REGULAR, reloaded.loyaltyTier());
         }
 
         @Test
         @DisplayName("rejects a blank name")
-        void rejectsBlankName() {
-            assertThrows(IllegalArgumentException.class, () -> customerService.create("  "));
+        void rejectsBlank() {
+            assertThrows(IllegalArgumentException.class, () -> service.create("   "));
+        }
+
+        @Test
+        @DisplayName("rejects a null name")
+        void rejectsNull() {
+            assertThrows(NullPointerException.class, () -> service.create(null));
         }
     }
 
@@ -56,67 +57,67 @@ class CustomerServiceTest {
     class FindByIdTests {
 
         @Test
-        @DisplayName("returns a previously created customer")
-        void findsExisting() {
-            Customer created = customerService.create("Alice");
-            assertEquals(created.id(), customerService.findById(created.id()).orElseThrow().id());
+        @DisplayName("finds a customer")
+        void finds() {
+            UserEntity created = service.create("Alice");
+            assertTrue(service.findById(created.id()).isPresent());
         }
 
         @Test
-        @DisplayName("returns empty for an unknown id")
-        void emptyForUnknown() {
-            assertTrue(customerService.findById(404L).isEmpty());
-        }
-    }
-
-    @Nested
-    @DisplayName("incrementFulfilled()")
-    class IncrementFulfilledTests {
-
-        @Test
-        @DisplayName("raises the customer's fulfilled-order count")
-        void raisesCount() {
-            Customer created = customerService.create("Alice");
-            customerService.incrementFulfilled(created.id());
-            assertEquals(1, customerService.findById(created.id()).orElseThrow().fulfilledOrders());
+        @DisplayName("is empty for an unknown id")
+        void unknown() {
+            assertTrue(service.findById(404L).isEmpty());
         }
 
         @Test
-        @DisplayName("can raise the derived loyalty tier")
-        void canRaiseTier() {
-            Customer created = customerService.create("Alice");
-            for (int i = 0; i < 6; i++) {
-                customerService.incrementFulfilled(created.id());
-            }
-            assertEquals(LoyaltyTier.SILVER,
-                    customerService.findById(created.id()).orElseThrow().loyaltyTier());
+        @DisplayName("is empty for a user who is not a CUSTOMER")
+        void notACustomer() {
+            UserEntity barista = users.save(new UserEntity("Bob", Role.BARISTA));
+            assertTrue(service.findById(barista.id()).isEmpty());
         }
 
         @Test
-        @DisplayName("throws for an unknown customer id")
-        void throwsForUnknown() {
-            assertThrows(NoSuchElementException.class, () -> customerService.incrementFulfilled(404L));
+        @DisplayName("rejects a null id")
+        void rejectsNull() {
+            assertThrows(NullPointerException.class, () -> service.findById(null));
         }
     }
 
     @Nested
-    @DisplayName("clear()")
-    class ClearTests {
+    @DisplayName("require()")
+    class RequireTests {
 
         @Test
-        @DisplayName("removes every stored customer")
-        void removesAll() {
-            Customer created = customerService.create("Alice");
-            customerService.clear();
-            assertTrue(customerService.findById(created.id()).isEmpty());
+        @DisplayName("returns the customer inside a transaction")
+        void requires() {
+            UserEntity created = service.create("Alice");
+            Long id = tx.execute(status -> service.require(created.id()).id());
+            assertEquals(created.id(), id);
         }
 
         @Test
-        @DisplayName("resets the id sequence")
-        void resetsSequence() {
-            customerService.create("Alice");
-            customerService.clear();
-            assertEquals(1L, customerService.create("Bob").id());
+        @DisplayName("throws CustomerNotFoundException for an unknown or non-customer id")
+        void notFound() {
+            UserEntity barista = users.save(new UserEntity("Bob", Role.BARISTA));
+            assertThrows(CustomerNotFoundException.class, () -> tx.execute(status -> service.require(404L)));
+            assertThrows(CustomerNotFoundException.class, () -> tx.execute(status -> service.require(barista.id())));
+        }
+
+        @Test
+        @DisplayName("requires an existing transaction (MANDATORY)")
+        void requiresTransaction() {
+            assertThrows(IllegalTransactionStateException.class, () -> service.require(1L));
+        }
+    }
+
+    @Nested
+    @DisplayName("constructor")
+    class ConstructorTests {
+
+        @Test
+        @DisplayName("rejects a null repository")
+        void rejectsNull() {
+            assertThrows(NullPointerException.class, () -> new CustomerService(null));
         }
     }
 }

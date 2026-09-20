@@ -1,6 +1,8 @@
 /**
- * Domain model: {@code Order}, {@code Customer}, {@code Coffee}, and the enums describing
- * their lifecycle (order status, loyalty tier). The Part 03 chat/persistence entities
- * ({@code ChatSession}, {@code ChatMessage}) live here too once JPA-mapped.
+ * Plain domain value types: the immutable {@code Order} snapshot, {@code Coffee}, {@code PriceBreakdown}
+ * and the enums describing lifecycle and roles (order status, loyalty tier, role, session status,
+ * message type). Nothing here is mutable persisted state: that lives only in the {@code entity}
+ * package ({@code OrderEntity}, {@code UserEntity}, ...), and {@code Order} is a read-only snapshot
+ * built from an {@code OrderEntity} inside a transaction.
  */
 package dev.saberlabs.coffeechat.model;

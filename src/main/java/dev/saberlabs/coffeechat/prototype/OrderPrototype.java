@@ -35,7 +35,7 @@ public class OrderPrototype {
      */
     public void copyOf(Order original) {
         Objects.requireNonNull(original, "original order cannot be null");
-        this.customerId = original.customer().id();
+        this.customerId = original.customerId();
         this.type = original.baseType();
         this.extras = List.copyOf(original.extras());
     }

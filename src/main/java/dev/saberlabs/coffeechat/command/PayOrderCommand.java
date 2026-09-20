@@ -3,46 +3,77 @@ package dev.saberlabs.coffeechat.command;
 import dev.saberlabs.coffeechat.adapter.PaymentGatewayResolver;
 import dev.saberlabs.coffeechat.adapter.PaymentProvider;
 import dev.saberlabs.coffeechat.adapter.PaymentResult;
-import dev.saberlabs.coffeechat.model.Order;
+import dev.saberlabs.coffeechat.entity.OrderEntity;
+import dev.saberlabs.coffeechat.facade.Actor;
+import dev.saberlabs.coffeechat.service.StaffAccess;
+import dev.saberlabs.coffeechat.facade.OrderStateConflictException;
+import dev.saberlabs.coffeechat.model.OrderStatus;
+import dev.saberlabs.coffeechat.service.OrderService;
+import dev.saberlabs.coffeechat.service.PaymentService;
 import jakarta.validation.constraints.NotNull;
 
 import java.util.Objects;
 
 /**
- * Pattern 6: COMMAND &mdash; collect payment for the order through the Adapter selected by
- * {@link PaymentProvider}. Does not change the order status (payment is orthogonal to the
- * prep lifecycle, as in {@code MyDesignPattern}); it throws {@link PaymentFailedException} if the
- * gateway declines. {@code undo()} is a best-effort refund note.
+ * Collects payment through the provider's Adapter and persists the outcome.
  *
- * <p>Part 03 persists the {@link PaymentResult} as a {@code PaymentEntity}; here it is kept on
- * the command for the caller to read.
+ * <p>The gateway declining is <em>not an exception</em>: the command commits a {@code FAILED}
+ * payment row and exposes the {@link PaymentResult} for the caller to act on. (Throwing would roll
+ * the transaction back and lose the FAILED row; a {@code REQUIRES_NEW} step to save it first would
+ * need a second pooled connection per in-flight payment and can deadlock a saturated pool.)
+ *
+ * <p>The order row is locked for the duration, so two concurrent payers are serialised before the
+ * gateway is called. Only a READY order is payable, and a PAID order is never charged again.
  */
 public class PayOrderCommand implements OrderCommand {
 
-    private final Order order;
+    private final Long orderId;
     private final PaymentProvider provider;
     private final PaymentGatewayResolver gateways;
+    private final OrderService orders;
+    private final PaymentService payments;
+    private final Actor actor;
+    private final StaffAccess access;
     private PaymentResult result;
 
-    public PayOrderCommand(@NotNull Order order, @NotNull PaymentProvider provider, @NotNull PaymentGatewayResolver gateways) {
-        this.order = Objects.requireNonNull(order, "order cannot be null");
+    public PayOrderCommand(@NotNull Long orderId,
+                           @NotNull PaymentProvider provider,
+                           @NotNull PaymentGatewayResolver gateways,
+                           @NotNull OrderService orders,
+                           @NotNull PaymentService payments,
+                           @NotNull Actor actor,
+                           @NotNull StaffAccess access) {
+        this.orderId = Objects.requireNonNull(orderId, "orderId cannot be null");
         this.provider = Objects.requireNonNull(provider, "provider cannot be null");
         this.gateways = Objects.requireNonNull(gateways, "gateways cannot be null");
+        this.orders = Objects.requireNonNull(orders, "orders cannot be null");
+        this.payments = Objects.requireNonNull(payments, "payments cannot be null");
+        this.actor = Objects.requireNonNull(actor, "actor cannot be null");
+        this.access = Objects.requireNonNull(access, "access cannot be null");
     }
 
     @Override
     public void execute() {
-        String orderRef = "ORDER-" + order.id();
-        result = gateways.forProvider(provider).pay(orderRef, order.price().total());
-        if (!result.isPaid()) {
-            throw new PaymentFailedException(result);
+        OrderEntity order = orders.requireForPayment(orderId);
+        // Who may pay: staff, this order's own customer, or the system. Checked before the status and
+        // before the gateway, inside this transaction, so a rejected payer is never charged anything.
+        access.authorizePayer(actor, order);
+        if (order.status() != OrderStatus.READY) {
+            throw new OrderStateConflictException(
+                    "Order " + orderId + " cannot be paid while it is " + order.status() + "; only a READY order is payable");
         }
+        result = payments.charge(order, provider, gateways.forProvider(provider));
+    }
+
+    /** Not supported: there is no refund flow (PRD §4), and a payment cannot be quietly forgotten. */
+    @Override
+    public void undo() {
+        throw new UndoNotSupportedException("A payment cannot be undone: refunds are not modelled");
     }
 
     @Override
-    public void undo() {
-        // No real processor to call; a refund would be issued here (see PRD §4).
-        result = null;
+    public boolean undoable() {
+        return false;
     }
 
     @Override
@@ -50,7 +81,7 @@ public class PayOrderCommand implements OrderCommand {
         return "PayOrder";
     }
 
-    /** The gateway outcome from the last successful {@link #execute()}, or {@code null}. */
+    /** The gateway outcome (PAID or FAILED) from the last {@link #execute()} that committed, or {@code null}. */
     public PaymentResult result() {
         return result;
     }
