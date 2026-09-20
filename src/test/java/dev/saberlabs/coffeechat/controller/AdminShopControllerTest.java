@@ -27,18 +27,11 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(AdminShopController.class)
 @DisplayName("AdminShopController")
-class AdminShopControllerTest {
+class AdminShopControllerTest extends AbstractWebMvcTest {
 
-    @Autowired
-    MockMvc mvc;
 
-    @MockitoBean
-    CoffeeShop coffeeShop;
 
-    @MockitoBean
-    CoffeeShopFacade facade;
 
     @Nested
     @DisplayName("POST /api/admin/shop/close")

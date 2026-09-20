@@ -49,17 +49,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(OrderController.class)
 @DisplayName("OrderController")
-class OrderControllerTest {
+class OrderControllerTest extends AbstractWebMvcTest {
 
     private static final Actor CALLER = Actor.user(7L);
 
-    @Autowired
-    MockMvc mvc;
 
-    @MockitoBean
-    CoffeeShopFacade facade;
 
     private static Order sampleOrder(long id, OrderStatus status) {
         Instant now = Instant.now();

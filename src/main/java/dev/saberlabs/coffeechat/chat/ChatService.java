@@ -190,6 +190,41 @@ public class ChatService {
         return store.history(sessionId);
     }
 
+    /** Largest page the history endpoint serves. */
+    public static final int MAX_HISTORY_PAGE_SIZE = 200;
+
+    /**
+     * One page of the session's messages, oldest first.
+     *
+     * @param page zero-based, at least 0
+     * @param size between 1 and {@value #MAX_HISTORY_PAGE_SIZE}
+     * @throws IllegalArgumentException     if page or size is out of range (the HTTP layer validates first; this is the guard)
+     * @throws ChatSessionNotFoundException if there is no such session
+     * @throws NotChatParticipantException  if the user is neither participant nor a MANAGER
+     */
+    public List<MessageView> history(@NotNull Actor actor, long sessionId, int page, int size) {
+        if (page < 0 || size < 1 || size > MAX_HISTORY_PAGE_SIZE) {
+            throw new IllegalArgumentException("page must be >= 0 and size between 1 and " + MAX_HISTORY_PAGE_SIZE);
+        }
+        UserEntity user = requireUser(actor, ANYONE, "read a chat");
+        SessionView session = requireSession(sessionId);
+        requireParticipantOrManager(user, session, "read it");
+        return store.history(sessionId, page, size);
+    }
+
+    /**
+     * The caller's own open session, with the other participant's name: a customer's WAITING/ACTIVE session
+     * (barista name once matched), or a barista's ACTIVE session (with the customer's name).
+     *
+     * @throws ChatSessionNotFoundException if they have none (404)
+     * @throws RoleNotAllowedException      for a MANAGER, who has no chat of their own (403)
+     */
+    public SessionDetail mySession(@NotNull Actor actor) {
+        UserEntity user = requireUser(actor, EnumSet.of(Role.CUSTOMER, Role.BARISTA), "have a chat of their own");
+        return store.findOpenFor(user.id(), user.role())
+                .orElseThrow(() -> ChatSessionNotFoundException.noOpenSessionFor(user.id()));
+    }
+
     // ----- the /order path -------------------------------------------------------------------------------
 
     private SendResult placeOrder(MessageView message, long sessionId, UserEntity customer, Parsed command) {

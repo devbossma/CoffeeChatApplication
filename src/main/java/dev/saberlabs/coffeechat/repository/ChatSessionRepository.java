@@ -66,5 +66,7 @@ public interface ChatSessionRepository extends JpaRepository<ChatSessionEntity, 
      * {@code uq_chat_sessions_active_customer}, the partial unique index enforcing at most one of
      * these per customer.
      */
+    Optional<ChatSessionEntity> findByBaristaIdAndStatus(Long baristaId, SessionStatus status);
+
     Optional<ChatSessionEntity> findByCustomerIdAndStatusNot(Long customerId, SessionStatus status);
 }

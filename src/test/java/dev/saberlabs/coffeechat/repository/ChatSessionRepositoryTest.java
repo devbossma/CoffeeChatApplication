@@ -155,6 +155,24 @@ class ChatSessionRepositoryTest extends AbstractRepositoryTest {
     }
 
     @Nested
+    @DisplayName("findByBaristaIdAndStatus()")
+    class FindByBaristaIdAndStatusTests {
+
+        @Test
+        @DisplayName("finds the barista ACTIVE session and nothing for another status or another barista")
+        void finds() {
+            UserEntity barista = userRepository.saveAndFlush(new UserEntity("Bob", Role.BARISTA));
+            UserEntity other = userRepository.saveAndFlush(new UserEntity("Bea", Role.BARISTA));
+            ChatSessionEntity active = sessionRepository.saveAndFlush(
+                    new ChatSessionEntity(customer, barista, SessionStatus.ACTIVE, Instant.now()));
+
+            assertEquals(active.id(), sessionRepository.findByBaristaIdAndStatus(barista.id(), SessionStatus.ACTIVE).orElseThrow().id());
+            assertTrue(sessionRepository.findByBaristaIdAndStatus(barista.id(), SessionStatus.INACTIVE).isEmpty());
+            assertTrue(sessionRepository.findByBaristaIdAndStatus(other.id(), SessionStatus.ACTIVE).isEmpty());
+        }
+    }
+
+    @Nested
     @DisplayName("findForShareById()")
     class FindForShareByIdTests {
 

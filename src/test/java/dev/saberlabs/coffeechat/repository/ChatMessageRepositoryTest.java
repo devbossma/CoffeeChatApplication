@@ -184,4 +184,28 @@ class ChatMessageRepositoryTest extends AbstractRepositoryTest {
             assertEquals(List.of("theirs"), messageRepository.findBySessionIdOrderBySentAtAscIdAsc(other.id()).stream().map(ChatMessageEntity::content).toList());
         }
     }
+
+    @Nested
+    @DisplayName("findBySessionIdOrderBySentAtAscIdAsc(pageable)")
+    class PagedTests {
+
+        @Test
+        @DisplayName("returns consecutive slices of the same ordering, and an empty page past the end")
+        void slices() {
+            Instant base = Instant.now();
+            for (int i = 0; i < 5; i++) {
+                messageRepository.saveAndFlush(new ChatMessageEntity(
+                        session, MessageType.CHAT_MESSAGE, customer, "Alice", "m" + i, base.plusSeconds(i), null));
+            }
+
+            List<String> first = messageRepository.findBySessionIdOrderBySentAtAscIdAsc(session.id(), org.springframework.data.domain.PageRequest.of(0, 2))
+                    .stream().map(ChatMessageEntity::content).toList();
+            List<String> third = messageRepository.findBySessionIdOrderBySentAtAscIdAsc(session.id(), org.springframework.data.domain.PageRequest.of(2, 2))
+                    .stream().map(ChatMessageEntity::content).toList();
+
+            assertEquals(List.of("m0", "m1"), first);
+            assertEquals(List.of("m4"), third);
+            assertTrue(messageRepository.findBySessionIdOrderBySentAtAscIdAsc(session.id(), org.springframework.data.domain.PageRequest.of(3, 2)).isEmpty());
+        }
+    }
 }

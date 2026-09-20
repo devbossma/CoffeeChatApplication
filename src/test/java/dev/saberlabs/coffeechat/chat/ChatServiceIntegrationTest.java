@@ -314,6 +314,94 @@ class ChatServiceIntegrationTest extends AbstractIntegrationTest {
     }
 
     @Nested
+    @DisplayName("mySession()")
+    class MySessionTests {
+
+        @Test
+        @DisplayName("a customer sees their session with the barista name; a barista sees theirs with the customer name")
+        void bothSides() {
+            SessionDetail mine = chat.mySession(as(alice));
+            SessionDetail theirs = chat.mySession(as(bob));
+
+            assertEquals(session.id(), mine.session().id());
+            assertEquals("Alice", mine.customerName());
+            assertEquals("Bob", mine.baristaName());
+            assertEquals(session.id(), theirs.session().id());
+            assertEquals("Alice", theirs.customerName());
+        }
+
+        @Test
+        @DisplayName("a WAITING customer session has no barista name")
+        void waitingHasNoBarista() {
+            UserEntity carl = customer("Carl");
+            chat.startChat(as(carl));
+
+            SessionDetail mine = chat.mySession(as(carl));
+
+            assertEquals(SessionStatus.WAITING, mine.session().status());
+            assertNull(mine.baristaName());
+        }
+
+        @Test
+        @DisplayName("404 once the session has ended, and for a barista with no active session")
+        void none() {
+            chat.endSession(as(alice), session.id());
+
+            assertThrows(ChatSessionNotFoundException.class, () -> chat.mySession(as(alice)));
+            assertThrows(ChatSessionNotFoundException.class, () -> chat.mySession(as(bob)));
+        }
+
+        @Test
+        @DisplayName("a manager has no chat of their own (403), the system actor and unknown users are 401")
+        void roles() {
+            assertThrows(RoleNotAllowedException.class, () -> chat.mySession(as(manager("Mona"))));
+            assertThrows(UnknownActorException.class, () -> chat.mySession(Actor.SYSTEM));
+            assertThrows(UnknownActorException.class, () -> chat.mySession(Actor.user(987654L)));
+        }
+    }
+
+    @Nested
+    @DisplayName("paged history()")
+    class PagedHistoryTests {
+
+        @Test
+        @DisplayName("pages in the same order as the full history, with no gaps or overlaps")
+        void pages() {
+            for (int i = 0; i < 6; i++) {
+                chat.sendMessage(as(alice), session.id(), "m" + i);
+            }
+            List<String> all = chat.history(as(alice), session.id()).stream().map(MessageView::content).toList();
+
+            List<String> stitched = new java.util.ArrayList<>();
+            for (int page = 0; page < 3; page++) {
+                stitched.addAll(chat.history(as(alice), session.id(), page, 3).stream().map(MessageView::content).toList());
+            }
+
+            assertEquals(7, all.size());
+            assertEquals(all, stitched);
+            assertEquals(1, chat.history(as(alice), session.id(), 2, 3).size());
+            assertTrue(chat.history(as(alice), session.id(), 5, 3).isEmpty());
+        }
+
+        @Test
+        @DisplayName("size 0, over the maximum and a negative page are refused before anything is read")
+        void bounds() {
+            assertThrows(IllegalArgumentException.class, () -> chat.history(as(alice), session.id(), 0, 0));
+            assertThrows(IllegalArgumentException.class, () -> chat.history(as(alice), session.id(), 0, ChatService.MAX_HISTORY_PAGE_SIZE + 1));
+            assertThrows(IllegalArgumentException.class, () -> chat.history(as(alice), session.id(), -1, 10));
+            assertEquals(1, chat.history(as(alice), session.id(), 0, ChatService.MAX_HISTORY_PAGE_SIZE).size());
+        }
+
+        @Test
+        @DisplayName("keeps the participant / manager rules and the 404")
+        void rules() {
+            assertThrows(NotChatParticipantException.class, () -> chat.history(as(customer("Carl")), session.id(), 0, 10));
+            assertThrows(ChatSessionNotFoundException.class, () -> chat.history(as(alice), 424242L, 0, 10));
+            assertEquals(1, chat.history(as(manager("Mona")), session.id(), 0, 10).size());
+        }
+    }
+
+    @Nested
     @DisplayName("the store's own check when a message is inserted")
     class InsertTimeCheckTests {
 

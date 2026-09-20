@@ -16,6 +16,7 @@ import jakarta.validation.constraints.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -180,6 +181,29 @@ public class ChatSessionStore {
 
     public Optional<SessionView> find(long sessionId) {
         return Optional.ofNullable(readTx.execute(status -> sessions.findById(sessionId).map(ChatSessionStore::view).orElse(null)));
+    }
+
+    /**
+     * The user's current open session with participant names: a customer's non-INACTIVE session, or a barista's
+     * ACTIVE one (at most one of each, by the unique indexes).
+     */
+    public Optional<SessionDetail> findOpenFor(long userId, @NotNull Role role) {
+        Objects.requireNonNull(role, "role cannot be null");
+        return Optional.ofNullable(readTx.execute(status -> {
+            Optional<ChatSessionEntity> found = switch (role) {
+                case CUSTOMER -> sessions.findByCustomerIdAndStatusNot(userId, SessionStatus.INACTIVE);
+                case BARISTA -> sessions.findByBaristaIdAndStatus(userId, SessionStatus.ACTIVE);
+                default -> Optional.empty();
+            };
+            return found.map(s -> new SessionDetail(view(s), s.customer().name(),
+                    s.barista() == null ? null : s.barista().name())).orElse(null);
+        }));
+    }
+
+    /** One page of the session's messages, oldest first (sent_at, then id); {@code page} is zero-based. */
+    public List<MessageView> history(long sessionId, int page, int size) {
+        return readTx.execute(status -> messages.findBySessionIdOrderBySentAtAscIdAsc(sessionId, PageRequest.of(page, size))
+                .stream().map(ChatSessionStore::view).toList());
     }
 
     /** Sessions in a status, oldest first. */

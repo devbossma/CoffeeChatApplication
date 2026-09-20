@@ -19,15 +19,10 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(CustomerController.class)
 @DisplayName("CustomerController")
-class CustomerControllerTest {
+class CustomerControllerTest extends AbstractWebMvcTest {
 
-    @Autowired
-    MockMvc mvc;
 
-    @MockitoBean
-    CustomerService customers;
 
     @Nested
     @DisplayName("POST /api/customers")
