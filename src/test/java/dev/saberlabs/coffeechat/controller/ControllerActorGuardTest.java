@@ -33,6 +33,12 @@ class ControllerActorGuardTest {
 
     private static final Path SOURCES = Path.of("src/main/java/dev/saberlabs/coffeechat/controller");
     private static final Path CLASSES = Path.of("target/classes/dev/saberlabs/coffeechat/controller");
+    /** The resolver package: it may build Actor.user(...) but, like the controllers, never Actor.SYSTEM. */
+    private static final Path WEB_SOURCES = Path.of("src/main/java/dev/saberlabs/coffeechat/web");
+    private static final Path WEB_CLASSES = Path.of("target/classes/dev/saberlabs/coffeechat/web");
+
+    /** Only the resolver may construct an Actor; a controller reading the id from anywhere else would bypass it. */
+    private static final Pattern ACTOR_FACTORY_IN_SOURCE = Pattern.compile("\\bActor\\s*\\.\\s*user\\s*\\(|\\bnew\\s+Actor\\s*\\(");
 
     private static final Pattern SYSTEM_ACTOR_IN_SOURCE = Pattern.compile("\\bActor\\s*\\.\\s*SYSTEM\\b");
 
@@ -99,6 +105,32 @@ class ControllerActorGuardTest {
         for (Path source : sources) {
             assertFalse(referencesSystemActorInSource(Files.readString(source)), source + " references Actor.SYSTEM");
         }
+    }
+
+    @Test
+    @DisplayName("the resolver package (source and bytecode) never references Actor.SYSTEM either")
+    void webPackageIsClean() throws IOException {
+        List<Path> sources = filesIn(WEB_SOURCES, ".java");
+        assertFalse(sources.isEmpty());
+        for (Path source : sources) {
+            assertFalse(referencesSystemActorInSource(Files.readString(source)), source + " references Actor.SYSTEM");
+        }
+        List<Path> classes = filesIn(WEB_CLASSES, ".class");
+        assertFalse(classes.isEmpty());
+        for (Path classFile : classes) {
+            assertFalse(referencesSystemActorInBytecode(Files.readAllBytes(classFile)), classFile + " references Actor.SYSTEM");
+        }
+    }
+
+    @Test
+    @DisplayName("no controller constructs an Actor: the identity comes only from the argument resolver")
+    void controllersDoNotBuildActors() throws IOException {
+        for (Path source : filesIn(SOURCES, ".java")) {
+            assertFalse(ACTOR_FACTORY_IN_SOURCE.matcher(Files.readString(source)).find(), source + " builds an Actor itself");
+        }
+        assertTrue(ACTOR_FACTORY_IN_SOURCE.matcher("var a = Actor.user(1L);").find());
+        assertTrue(ACTOR_FACTORY_IN_SOURCE.matcher("var a = new Actor(null);").find());
+        assertFalse(ACTOR_FACTORY_IN_SOURCE.matcher("void f(Actor actor) { facade.x(actor); }").find());
     }
 
     @Test

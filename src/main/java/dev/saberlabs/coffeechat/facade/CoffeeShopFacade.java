@@ -225,4 +225,21 @@ public class CoffeeShopFacade {
         Long recordedActor = staffAccess.authorize(actor, StaffAccess.STAFF);
         invoker.undoLast(recordedActor);
     }
+
+    /**
+     * Opens the shop for new orders. Shop-wide operational state, so only a MANAGER may change it.
+     *
+     * @throws UnknownActorException   if the actor's user id does not exist (401)
+     * @throws RoleNotAllowedException if the actor is not a MANAGER (403)
+     */
+    public void openShop(Actor actor) {
+        staffAccess.authorize(actor, java.util.EnumSet.of(dev.saberlabs.coffeechat.model.Role.MANAGER));
+        coffeeShop.open();
+    }
+
+    /** Closes the shop to new orders (orders already placed continue). Same rules as {@link #openShop}. */
+    public void closeShop(Actor actor) {
+        staffAccess.authorize(actor, java.util.EnumSet.of(dev.saberlabs.coffeechat.model.Role.MANAGER));
+        coffeeShop.close();
+    }
 }

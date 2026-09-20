@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -295,6 +296,34 @@ class CoffeeShopFacadeRolesTest extends AbstractIntegrationTest {
             assertEquals("CANCELLED", rows.get(rows.size() - 1).get("to_status"));
             assertEquals(barista.id(), rows.get(rows.size() - 1).get("changed_by"));
             assertNull(rows.get(0).get("changed_by"), "the placement itself stays a system row");
+        }
+    }
+
+    @Nested
+    @DisplayName("openShop() / closeShop()")
+    class ShopTests {
+
+        @Test
+        @DisplayName("only a MANAGER may close and open the shop")
+        void managerOnly() {
+            facade.closeShop(Actor.user(manager.id()));
+            assertFalse(coffeeShop.isOpen());
+            facade.openShop(Actor.user(manager.id()));
+            assertTrue(coffeeShop.isOpen());
+        }
+
+        @Test
+        @DisplayName("a customer or barista gets 403, an unknown user 401, and the shop is untouched")
+        void others() {
+            for (Long id : List.of(alice.id(), barista.id())) {
+                assertThrows(RoleNotAllowedException.class, () -> facade.closeShop(Actor.user(id)));
+            }
+            assertThrows(UnknownActorException.class, () -> facade.closeShop(Actor.user(987_654L)));
+            assertTrue(coffeeShop.isOpen());
+
+            coffeeShop.close();
+            assertThrows(RoleNotAllowedException.class, () -> facade.openShop(Actor.user(barista.id())));
+            assertFalse(coffeeShop.isOpen());
         }
     }
 
