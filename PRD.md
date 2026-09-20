@@ -456,6 +456,66 @@ The user-facing description, with a verified curl walkthrough and the status-cod
   coverage gate, not just "some tests exist") — exact tool/threshold
   (JaCoCo, as before) to be wired once the project is scaffolded.
 
+### 10.1 What Part 03 covers end to end (as built)
+
+The plan above is the original intent; this is what exists. `mvn clean verify` runs everything and enforces the
+80% per-package line-coverage gate.
+
+| Tier | What | Where |
+|---|---|---|
+| Unit | pure logic and failure handling with collaborators faked: parser, `BaristaQueue`, `ChatMatchmaker` failure paths, `ChatService` confirmation retries, resolvers, the `X-User-Id` resolver, the bootstrap | `*Test` next to each class |
+| Persistence | every repository against real Postgres (`@DataJpaTest`, singleton Testcontainers): constraints asserted by SQLSTATE and constraint name, custom queries, locks | `repository/*Test` |
+| Web slice | every controller, valid / 400 / 401 / 403 / 404 / 409 (and 402), services mocked, ProblemDetail bodies; one shared slice (`AbstractWebMvcTest`) | `controller/*Test` |
+| Integration | full context, real database, real transactions and real `AFTER_COMMIT` listeners: facade, roles, concurrency races (barrier-based), chat matching, recovery | `AbstractIntegrationTest` subclasses |
+| End to end | over HTTP through the real controllers, real facade, real asynchronous baristas, real Postgres (`e2e/EndToEndFlowsTest`) | see below |
+| Documentation | `docs/API.md`'s curl walkthrough is parsed and executed; a mismatch fails the build (`e2e/ApiDocWalkthroughTest`) | |
+
+`EndToEndFlowsTest` asserts the HTTP answer **and** the rows left behind (orders, `order_extras`, payments,
+`order_status_history` including `changed_by`, chat sessions and messages, `fulfilled_orders`) for: the order
+lifecycle; the chat flow (match, `/order` with a persisted confirmation linked to the real order id, paged
+history, end and rematch); reorder of a `[MILK, MILK, SUGAR]` order at the customer's current tier; loyalty (the
+tier rises for the next order only); failure paths (unpaid fulfil 409, wrong role 403, missing/unknown identity 401,
+unknown order 404, payment decline 402 then a CASH retry on the same payments row, closed shop 409 for an order and
+for a chat `/order`, duplicate chat start 409, illegal transition 409, malformed input 400); concurrency (two
+simultaneous pays of one order, two customers and two baristas arriving together); and restart recovery.
+
+The whole suite builds **three** Spring contexts: the full application (which also provides `MockMvc`, via
+`@AutoConfigureMockMvc` on the shared integration base), the `@DataJpaTest` slice, and the single shared web slice.
+Every test cleans the database before and after itself and stops the baristas in a `finally`, so tests do not
+depend on order. Asynchronous effects are awaited with Awaitility; there are no sleeps.
+
+### 10.2 Known limitations of Part 03 (one place)
+
+Design decisions that are deliberate, and gaps that are known. None is hidden elsewhere.
+
+**Identity and access**
+- `X-User-Id` is a claimed identity, not authentication; ids are guessable sequential numbers (§4, `docs/API.md`).
+- 404 is answered before 403, so an authenticated caller can probe whether an order id exists.
+- Customers cannot cancel their own order; only staff can. Undo is deliberately not exposed over REST.
+- A MANAGER's actions are not attributable in the order audit trail (`changed_by` is NULL by rule).
+- Manager-only endpoints depend on the seeded first manager (`coffeeshop.bootstrap.manager-name`).
+
+**Orders and payments**
+- No idempotency key: a retried `POST /api/orders` or `/order` chat message places a second order.
+- No refund when a paid order is cancelled; only the latest payment failure is kept (the row is updated in place).
+- The loyalty tier is read just before the placement transaction, so a fulfilment that commits in that gap can
+  leave the frozen tier one order stale; the next order picks the new tier up.
+- The in-memory invoker history/undo stack is a recent-activity aid only, not durable and global across users.
+- An `AFTER_COMMIT` enqueue onto a full order queue can block the committing thread until a barista frees a slot.
+
+**Chat**
+- Stale sessions never expire: an abandoned WAITING/ACTIVE session stays until someone ends it, and a customer
+  can have only one open session.
+- Ready baristas are not remembered across a restart and must register again (sessions themselves are recovered).
+- After a transient write failure a matched pair waits for the next chat operation instead of a timer (bounded by
+  a retry cap that then drops the barista).
+- `sent_at` is the application clock, so ordering across concurrent transactions is best effort; the id breaks ties.
+
+**Test scope**
+- The real gateways never decline a normal amount, so the end-to-end decline test swaps the PayPal gateway of the
+  real resolver for one with a tiny balance and restores it afterwards.
+- Load, soak and multi-instance behaviour are not tested: the queues are in-memory and single-instance by design.
+
 ## 11. Resolved decisions (previously open questions)
 
 All four were open at scaffold time and are now settled — full rationale for each lives in

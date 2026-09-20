@@ -32,6 +32,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -55,6 +56,7 @@ import static org.awaitility.Awaitility.await;
  * itself, and they are stopped again in a {@code finally} after it.
  */
 @SpringBootTest
+@AutoConfigureMockMvc
 public abstract class AbstractIntegrationTest extends SharedPostgresContainer {
 
     @Autowired protected UserRepository users;
