@@ -300,6 +300,53 @@ class CoffeeShopFacadeRolesTest extends AbstractIntegrationTest {
     }
 
     @Nested
+    @DisplayName("placeOrder / getOrder / reorder with an actor")
+    class OwnerOrStaffTests {
+
+        @Test
+        @DisplayName("a customer may place, read and reorder their own order; staff may do so for anyone")
+        void allowed() {
+            Order mine = facade.placeOrder(new PlaceOrderRequest(alice.id(), CoffeeType.ESPRESSO, List.of()), Actor.user(alice.id()));
+            assertEquals(mine.id(), facade.getOrder(mine.id(), Actor.user(alice.id())).id());
+            assertEquals(mine.id(), facade.getOrder(mine.id(), Actor.user(barista.id())).id());
+            assertEquals(mine.id(), facade.getOrder(mine.id(), Actor.user(manager.id())).id());
+            assertEquals(alice.id(), facade.reorder(mine.id(), Actor.user(alice.id())).customerId());
+            assertEquals(alice.id(), facade.reorder(mine.id(), Actor.user(barista.id())).customerId());
+            assertEquals(alice.id(), facade.placeOrder(new PlaceOrderRequest(alice.id(), CoffeeType.LATTE, List.of()), Actor.user(manager.id())).customerId());
+        }
+
+        @Test
+        @DisplayName("another customer is refused (403) for each, and nothing is placed")
+        void otherCustomer() {
+            Long id = placed().id();
+            long ordersBefore = orders.count();
+            Actor mallory = Actor.user(otherCustomer.id());
+
+            assertThrows(RoleNotAllowedException.class, () -> facade.getOrder(id, mallory));
+            assertThrows(RoleNotAllowedException.class, () -> facade.reorder(id, mallory));
+            assertThrows(RoleNotAllowedException.class,
+                    () -> facade.placeOrder(new PlaceOrderRequest(alice.id(), CoffeeType.ESPRESSO, List.of()), mallory));
+            assertEquals(ordersBefore, orders.count());
+        }
+
+        @Test
+        @DisplayName("an unknown user is 401 even for an order that does not exist; a known user gets 404 for a missing order")
+        void unknownAndMissing() {
+            assertThrows(UnknownActorException.class, () -> facade.getOrder(987_654L, Actor.user(987_654L)));
+            assertThrows(OrderNotFoundException.class, () -> facade.getOrder(987_654L, Actor.user(alice.id())));
+            assertThrows(UnknownActorException.class,
+                    () -> facade.placeOrder(new PlaceOrderRequest(alice.id(), CoffeeType.ESPRESSO, List.of()), Actor.user(987_654L)));
+        }
+
+        @Test
+        @DisplayName("staff placing for a user who is not a customer is a not-found, not a success")
+        void staffOrderingForNonCustomer() {
+            assertThrows(CustomerNotFoundException.class,
+                    () -> facade.placeOrder(new PlaceOrderRequest(barista.id(), CoffeeType.ESPRESSO, List.of()), Actor.user(manager.id())));
+        }
+    }
+
+    @Nested
     @DisplayName("openShop() / closeShop()")
     class ShopTests {
 

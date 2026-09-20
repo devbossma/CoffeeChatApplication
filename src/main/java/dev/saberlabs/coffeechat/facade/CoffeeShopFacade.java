@@ -125,6 +125,41 @@ public class CoffeeShopFacade {
         return getOrder(command.orderId());
     }
 
+    /**
+     * Places an order on behalf of {@code actor}: a CUSTOMER may only order for themselves; staff may order
+     * for any customer. Identity is checked before anything else, then this is {@link #placeOrder(PlaceOrderRequest)}.
+     *
+     * @throws UnknownActorException   if the actor's user id does not exist (401)
+     * @throws RoleNotAllowedException if a customer orders for someone else (403)
+     */
+    public Order placeOrder(PlaceOrderRequest request, Actor actor) {
+        staffAccess.authorizeOwnerOrStaff(actor, request.customerId(), "place an order for customer " + request.customerId());
+        return placeOrder(request);
+    }
+
+    /**
+     * Reads an order for {@code actor}: staff or the order's own customer.
+     *
+     * @throws UnknownActorException    if the actor's user id does not exist (401, checked first)
+     * @throws OrderNotFoundException   if no order has that id (404)
+     * @throws RoleNotAllowedException  if the actor is another customer (403)
+     */
+    public Order getOrder(Long orderId, Actor actor) {
+        staffAccess.authorize(actor, java.util.EnumSet.allOf(dev.saberlabs.coffeechat.model.Role.class));
+        Order order = getOrder(orderId);
+        staffAccess.authorizeOwnerOrStaff(actor, order.customerId(), "read order " + orderId);
+        return order;
+    }
+
+    /**
+     * Re-orders for {@code actor}: only the original order's customer, or staff. Same checks and order as
+     * {@link #getOrder(Long, Actor)}, then {@link #reorder(Long)}.
+     */
+    public Order reorder(Long orderId, Actor actor) {
+        getOrder(orderId, actor);
+        return reorder(orderId);
+    }
+
     /** @throws OrderNotFoundException if no order has that id. */
     public Order getOrder(Long orderId) {
         return orders.findById(orderId).orElseThrow(() -> new OrderNotFoundException(orderId));

@@ -14,18 +14,27 @@ import dev.saberlabs.coffeechat.facade.RoleNotAllowedException;
 import dev.saberlabs.coffeechat.facade.ShopClosedException;
 import dev.saberlabs.coffeechat.facade.UnknownActorException;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 /**
  * Maps the domain exceptions {@code CoffeeShopFacade} throws (and bean-validation failures) onto
  * HTTP status codes, so controllers can stay free of {@code try/catch}.
  */
 @RestControllerAdvice
-public class RestExceptionHandler {
+public class RestExceptionHandler extends ResponseEntityExceptionHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(RestExceptionHandler.class);
 
     @ExceptionHandler({ShopClosedException.class, CoffeeNotOnMenuException.class, OrderStateConflictException.class})
     public ProblemDetail onConflict(RuntimeException ex) {
@@ -34,8 +43,10 @@ public class RestExceptionHandler {
 
     /** The caller could not be identified (no actor, or an unknown user id). */
     @ExceptionHandler(UnknownActorException.class)
-    public ProblemDetail onUnknownActor(UnknownActorException ex) {
-        return ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, ex.getMessage());
+    public ResponseEntity<ProblemDetail> onUnknownActor(UnknownActorException ex) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .header(HttpHeaders.WWW_AUTHENTICATE, "X-User-Id")
+                .body(ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, ex.getMessage()));
     }
 
     /** A known user whose role does not permit the action. */
@@ -94,12 +105,26 @@ public class RestExceptionHandler {
         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
     }
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ProblemDetail onValidationError(MethodArgumentNotValidException ex) {
+    /**
+     * Request-body validation. Overrides the base class so the body names the first offending field. (All the
+     * other framework failures, such as malformed JSON, a missing body, an unknown enum value or a
+     * wrong-typed path variable, are answered as 400/405/415 {@code ProblemDetail}s by
+     * {@link ResponseEntityExceptionHandler} itself.)
+     */
+    @Override
+    protected ResponseEntity<Object> handleMethodArgumentNotValid(MethodArgumentNotValidException ex, HttpHeaders headers,
+                                                                  HttpStatusCode status, WebRequest request) {
         String detail = ex.getBindingResult().getFieldErrors().stream()
                 .map(e -> e.getField() + " " + e.getDefaultMessage())
                 .findFirst()
                 .orElse("request validation failed");
-        return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, detail);
+        return ResponseEntity.badRequest().body(ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, detail));
+    }
+
+    /** Anything unforeseen: a ProblemDetail like every other error, with no internal message leaked. */
+    @ExceptionHandler(Exception.class)
+    public ProblemDetail onUnexpected(Exception ex) {
+        log.error("Unhandled exception in a request", ex);
+        return ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, "An unexpected error occurred");
     }
 }

@@ -133,6 +133,38 @@ class StaffAccessTest extends AbstractIntegrationTest {
         }
     }
 
+    @Nested
+    @DisplayName("authorizeOwnerOrStaff()")
+    class AuthorizeOwnerOrStaffTests {
+
+        @Test
+        @DisplayName("the owner, staff and the system are allowed")
+        void allowed() {
+            UserEntity alice = customer("Alice");
+            access.authorizeOwnerOrStaff(Actor.user(alice.id()), alice.id(), "read");
+            access.authorizeOwnerOrStaff(Actor.user(barista("Bob").id()), alice.id(), "read");
+            access.authorizeOwnerOrStaff(Actor.user(manager("Maria").id()), alice.id(), "read");
+            access.authorizeOwnerOrStaff(Actor.SYSTEM, alice.id(), "read");
+        }
+
+        @Test
+        @DisplayName("another customer is a 403, an unknown user a 401")
+        void rejected() {
+            UserEntity alice = customer("Alice");
+            UserEntity mallory = customer("Mallory");
+            assertThrows(RoleNotAllowedException.class, () -> access.authorizeOwnerOrStaff(Actor.user(mallory.id()), alice.id(), "read"));
+            assertThrows(UnknownActorException.class, () -> access.authorizeOwnerOrStaff(Actor.user(987_654L), alice.id(), "read"));
+        }
+
+        @Test
+        @DisplayName("rejects null arguments")
+        void nulls() {
+            assertThrows(NullPointerException.class, () -> access.authorizeOwnerOrStaff(null, 1L, "x"));
+            assertThrows(NullPointerException.class, () -> access.authorizeOwnerOrStaff(Actor.SYSTEM, null, "x"));
+            assertThrows(NullPointerException.class, () -> access.authorizeOwnerOrStaff(Actor.SYSTEM, 1L, null));
+        }
+    }
+
     @Test
     @DisplayName("constructor rejects a null repository")
     void rejectsNullRepository() {

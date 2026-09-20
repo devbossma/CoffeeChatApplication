@@ -76,6 +76,28 @@ public class StaffAccess {
         }
     }
 
+    /**
+     * Who may see or re-order an order, or place one for a customer: staff, the customer themselves, or
+     * {@link Actor#SYSTEM}. Another customer is rejected.
+     *
+     * @param customerId the customer the order belongs to (or is being placed for)
+     */
+    @Transactional(readOnly = true)
+    public void authorizeOwnerOrStaff(@NotNull Actor actor, @NotNull Long customerId, @NotNull String action) {
+        Objects.requireNonNull(actor, "actor cannot be null");
+        Objects.requireNonNull(customerId, "customerId cannot be null");
+        Objects.requireNonNull(action, "action cannot be null");
+        if (actor.isSystem()) {
+            return;
+        }
+        UserEntity user = find(actor.userId());
+        boolean staff = STAFF.contains(user.role());
+        boolean owner = user.role() == Role.CUSTOMER && user.id().equals(customerId);
+        if (!staff && !owner) {
+            throw new RoleNotAllowedException(user.id(), user.role(), action);
+        }
+    }
+
     private UserEntity find(Long userId) {
         return users.findById(userId).orElseThrow(() -> UnknownActorException.noSuchUser(userId));
     }

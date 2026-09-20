@@ -37,6 +37,7 @@ class ChatExceptionMappingTest {
                 case "participant" -> new NotChatParticipantException(3L, 9L, "post to it");
                 case "missing" -> new ChatSessionNotFoundException(9L);
                 case "blank" -> new InvalidChatMessageException("A chat message cannot be blank");
+                case "iae" -> new IllegalArgumentException("internal invariant");
                 default -> new IllegalStateException(kind);
             };
         }
@@ -83,5 +84,19 @@ class ChatExceptionMappingTest {
     @DisplayName("an invalid message is 400")
     void invalidMessage() throws Exception {
         mvc.perform(get("/boom/blank")).andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("an unforeseen exception is a 500 ProblemDetail that does not leak the internal message")
+    void unexpected() throws Exception {
+        mvc.perform(get("/boom/secret-internal-detail"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.detail").value("An unexpected error occurred"));
+    }
+
+    @Test
+    @DisplayName("a programming-error IllegalArgumentException is no longer blamed on the client")
+    void illegalArgumentIsNot400() throws Exception {
+        mvc.perform(get("/boom/iae")).andExpect(status().isInternalServerError());
     }
 }
