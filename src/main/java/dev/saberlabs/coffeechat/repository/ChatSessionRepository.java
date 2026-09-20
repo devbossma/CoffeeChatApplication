@@ -3,7 +3,9 @@ package dev.saberlabs.coffeechat.repository;
 import dev.saberlabs.coffeechat.entity.ChatSessionEntity;
 import dev.saberlabs.coffeechat.entity.UserEntity;
 import dev.saberlabs.coffeechat.model.SessionStatus;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -21,6 +23,15 @@ public interface ChatSessionRepository extends JpaRepository<ChatSessionEntity, 
      * everything on restart) &mdash; served by {@code idx_chat_sessions_status}.
      */
     List<ChatSessionEntity> findByStatus(SessionStatus status);
+
+    /**
+     * The session with a shared row lock ({@code FOR SHARE}) held until the transaction ends: a concurrent
+     * {@code endIfNotInactive}/{@code activateIfWaiting} UPDATE waits for it, so a message insert that has
+     * checked "ACTIVE, and this sender is a participant" cannot be invalidated before it commits.
+     */
+    @Lock(LockModeType.PESSIMISTIC_READ)
+    @Query("select s from ChatSessionEntity s where s.id = :id")
+    Optional<ChatSessionEntity> findForShareById(@Param("id") Long id);
 
     /** Sessions in {@code status}, oldest first (creation order), for restart recovery. */
     List<ChatSessionEntity> findByStatusOrderByIdAsc(SessionStatus status);

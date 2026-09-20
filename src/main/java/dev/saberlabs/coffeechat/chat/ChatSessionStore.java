@@ -140,14 +140,38 @@ public class ChatSessionStore {
     /**
      * Appends a message. Content is stored as given: validation (trim, blank, length) is the caller's, with
      * the database CHECKs as the backstop.
+     *
+     * <p>A CHAT_MESSAGE is checked <em>in the same transaction as the insert</em>, under a shared lock on the
+     * session row: the session must be ACTIVE and the sender must be its customer or its currently assigned
+     * barista. So a session that ended, or a barista who was un-assigned, between the caller's own check and
+     * this insert cannot receive a message. SYSTEM messages are not checked (the system may always write).
+     *
+     * @throws ChatSessionNotFoundException   if there is no such session
+     * @throws SessionNotActiveException      if a CHAT_MESSAGE targets a session that is not ACTIVE
+     * @throws NotChatParticipantException    if a CHAT_MESSAGE's sender is not a participant
      */
     public MessageView addMessage(long sessionId, @NotNull MessageType type, @Nullable Long senderId, @NotNull String senderName,
                                   @NotNull String content, @Nullable Long orderId) {
         Objects.requireNonNull(type, "type cannot be null");
         Objects.requireNonNull(senderName, "senderName cannot be null");
         Objects.requireNonNull(content, "content cannot be null");
+        if (type == MessageType.CHAT_MESSAGE && senderId == null) {
+            throw new IllegalArgumentException("A CHAT_MESSAGE needs a sender");
+        }
         return tx.execute(status -> {
-            ChatSessionEntity session = sessions.findById(sessionId).orElseThrow(() -> new IllegalStateException("No session " + sessionId));
+            ChatSessionEntity session = (type == MessageType.CHAT_MESSAGE
+                    ? sessions.findForShareById(sessionId)
+                    : sessions.findById(sessionId)).orElseThrow(() -> new ChatSessionNotFoundException(sessionId));
+            if (type == MessageType.CHAT_MESSAGE) {
+                if (session.status() != SessionStatus.ACTIVE) {
+                    throw new SessionNotActiveException(sessionId, session.status());
+                }
+                boolean participant = senderId.equals(session.customer().id())
+                        || (session.barista() != null && senderId.equals(session.barista().id()));
+                if (!participant) {
+                    throw new NotChatParticipantException(senderId, sessionId, "post to it");
+                }
+            }
             UserEntity sender = senderId == null ? null : users.getReferenceById(senderId);
             OrderEntity order = orderId == null ? null : orders.getReferenceById(orderId);
             return insert(session, type, sender, senderName, content, order);

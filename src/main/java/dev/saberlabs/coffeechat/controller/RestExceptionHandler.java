@@ -3,6 +3,7 @@ package dev.saberlabs.coffeechat.controller;
 import dev.saberlabs.coffeechat.command.UndoNotSupportedException;
 import dev.saberlabs.coffeechat.chat.ChatSessionAlreadyOpenException;
 import dev.saberlabs.coffeechat.chat.ChatSessionNotFoundException;
+import dev.saberlabs.coffeechat.chat.InvalidChatMessageException;
 import dev.saberlabs.coffeechat.chat.NotChatParticipantException;
 import dev.saberlabs.coffeechat.chat.SessionNotActiveException;
 import dev.saberlabs.coffeechat.facade.CoffeeNotOnMenuException;
@@ -83,8 +84,13 @@ public class RestExceptionHandler {
         return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
     }
 
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ProblemDetail onBadRequest(IllegalArgumentException ex) {
+    /**
+     * Deliberately the only "bad input" domain mapping: a blanket {@code IllegalArgumentException -> 400} would
+     * turn programming errors from anywhere into a 400 carrying an internal message. Request bodies are
+     * validated by bean validation ({@code MethodArgumentNotValidException} below).
+     */
+    @ExceptionHandler(InvalidChatMessageException.class)
+    public ProblemDetail onInvalidChatMessage(InvalidChatMessageException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, ex.getMessage());
     }
 

@@ -385,7 +385,7 @@ the intended surface; this section is what was actually built and why.
 |---|---|
 | Session no longer WAITING (ended in between) | Match dropped; barista back to the front of the ready line and paired with the next waiting customer, in one queue operation. |
 | Barista can never serve (`ChatBaristaUnavailableException`: no such user, not a BARISTA, already ACTIVE elsewhere) | Permanent: barista dropped from the queue; the customer keeps their place at the front. |
-| Anything else (transient) | Pair put back at the front of both lines, error logged, **not rethrown** (the caller's request already succeeded). The next operation starts with `pairPending()`, so no timer is needed, and a newcomer cannot overtake the failed pair. |
+| Anything else (transient) | EVERY tentative pair of the batch goes back to the front of both lines in the original order (nothing stays BUSY in memory without a committed ACTIVE row), the error is logged and **not rethrown**. The next operation starts with `pairPending()`, so no timer is needed and a newcomer cannot overtake the failed pair. After `chat.match.max-attempts` (default 3) consecutive failures of the same pair it is treated as permanent (barista dropped, ERROR logged with both ids, the customer paired with the next ready barista), so a poison pair cannot block the head of both lines forever. |
 
 **Authorization** (plain service-layer checks, as §9.6): `Actor.SYSTEM` is rejected everywhere (401). Only a
 CUSTOMER starts a chat; only a BARISTA registers as ready/offline; a session's customer, its barista or any
@@ -393,8 +393,9 @@ MANAGER may end it or read its history; only its two participants may post, and 
 A MANAGER may not post. A barista's message starting with `/order` is plain text: only a customer's message
 is parsed.
 
-**Messages.** Content is stripped of Unicode spaces, must not be blank, at most 2000 characters (400 otherwise).
-History is ordered by `sent_at`, then `id`.
+**Messages.** Content is stripped of Unicode spaces, must not be blank, at most 2000 characters (`InvalidChatMessageException`, 400; a dedicated type, and there is deliberately no blanket `IllegalArgumentException` -> 400 mapping, which would turn programming errors into client errors). The ACTIVE and participant rules are checked in `ChatService` (fast, friendly) and **again inside the insert's own transaction under a `FOR SHARE` row lock** (`ChatSessionStore.addMessage`), so a session that ends, or a barista who is un-assigned, between the two cannot receive a message. SYSTEM messages are exempt (the `/order` confirmation must not be lost). History is ordered by `sent_at`, then `id`.
+
+`ChatService` refuses to run inside a caller's transaction (`IllegalStateException`): its steps are separate transactions by design and an outer `@Transactional` would silently merge them.
 
 **The `/order` path (Flow C)** is three independent transactions: T1 stores the customer's message (always kept);
 T2 is `CoffeeShopFacade.placeOrder` (the only door into the order lifecycle); T3 stores a SYSTEM confirmation
@@ -409,8 +410,7 @@ ACTIVE 409, not a participant 403, unknown session 404, invalid message 400, rol
 - **No idempotency key.** A retried identical `/order` message is a new message and places a second order. What is guaranteed: one accepted message stores exactly one CHAT_MESSAGE and places at most one order, even when T3 is retried.
 - Stale sessions never expire: a customer who walks away stays WAITING/ACTIVE until someone ends the session (and, with one open session per customer, cannot start another).
 - Ready baristas are not recoverable after a restart (nothing durable says who was ready) and must register again.
-- A message posted in the instant a session ends may still be stored (the ACTIVE check and the insert are two steps); harmless.
-- After a transient write failure a pair waits for the next chat operation rather than a timer.
+- After a transient write failure a pair waits for the next chat operation rather than a timer (bounded by the retry cap above).
 - `sent_at` is the application clock, so cross-transaction ordering is best-effort; the id breaks same-instant ties.
 
 **Step 6 notes (not built).** A barista needs a "my active session" read (today only the session id is known to

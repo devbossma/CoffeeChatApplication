@@ -2,6 +2,7 @@ package dev.saberlabs.coffeechat.controller;
 
 import dev.saberlabs.coffeechat.chat.ChatSessionAlreadyOpenException;
 import dev.saberlabs.coffeechat.chat.ChatSessionNotFoundException;
+import dev.saberlabs.coffeechat.chat.InvalidChatMessageException;
 import dev.saberlabs.coffeechat.chat.NotChatParticipantException;
 import dev.saberlabs.coffeechat.chat.SessionNotActiveException;
 import dev.saberlabs.coffeechat.model.SessionStatus;
@@ -35,7 +36,7 @@ class ChatExceptionMappingTest {
                 case "inactive" -> new SessionNotActiveException(9L, SessionStatus.WAITING);
                 case "participant" -> new NotChatParticipantException(3L, 9L, "post to it");
                 case "missing" -> new ChatSessionNotFoundException(9L);
-                case "blank" -> new IllegalArgumentException("A chat message cannot be blank");
+                case "blank" -> new InvalidChatMessageException("A chat message cannot be blank");
                 default -> new IllegalStateException(kind);
             };
         }

@@ -4,12 +4,19 @@ import dev.saberlabs.coffeechat.chat.BaristaQueue.Match;
 import jakarta.validation.constraints.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Deque;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * The matching protocol: {@link BaristaQueue} decides (in memory, under its lock), {@link ChatSessionStore}
@@ -27,10 +34,12 @@ import java.util.Objects;
  *       queue operation.</li>
  *   <li><em>The barista can never serve</em> ({@link ChatBaristaUnavailableException}): permanent, so the
  *       barista is dropped from the queue and the customer keeps their place at the front.</li>
- *   <li><em>Anything else</em> (a transient database error): the pair goes back to the front of their lines,
- *       the error is logged and NOT rethrown (the caller's own request already succeeded: the session exists
- *       or the barista is registered), and the pair is retried by the next operation, which starts with
- *       {@link BaristaQueue#pairPending()}; no timer is needed and nobody can overtake them.</li>
+ *   <li><em>Anything else</em> (a transient database error): EVERY tentative match of the batch goes back to
+ *       the front of its lines in the original order, the error is logged and NOT rethrown (the caller's own
+ *       request already succeeded), and the pair is retried by the next operation, which starts with
+ *       {@link BaristaQueue#pairPending()}; no timer is needed and nobody can overtake them. After
+ *       {@code chat.match.max-attempts} (default 3) consecutive failures of the same pair, it is treated as
+ *       permanent: the barista is dropped, an ERROR is logged, and the customer is paired with the next one.</li>
  * </ul>
  */
 @Service
@@ -38,12 +47,27 @@ public class ChatMatchmaker {
 
     private static final Logger log = LoggerFactory.getLogger(ChatMatchmaker.class);
 
+    static final int DEFAULT_MAX_ATTEMPTS = 3;
+
     private final BaristaQueue queue;
     private final ChatSessionStore store;
+    private final int maxAttempts;
+    /** Consecutive transient failures per tentative pair; cleared on success or when the pair is given up. */
+    private final Map<Match, Integer> failures = new ConcurrentHashMap<>();
 
-    public ChatMatchmaker(@NotNull BaristaQueue queue, @NotNull ChatSessionStore store) {
+    @Autowired
+    public ChatMatchmaker(@NotNull BaristaQueue queue, @NotNull ChatSessionStore store,
+                          @Value("${chat.match.max-attempts:" + DEFAULT_MAX_ATTEMPTS + "}") int maxAttempts) {
         this.queue = Objects.requireNonNull(queue, "queue cannot be null");
         this.store = Objects.requireNonNull(store, "store cannot be null");
+        if (maxAttempts < 1) {
+            throw new IllegalArgumentException("chat.match.max-attempts must be at least 1: " + maxAttempts);
+        }
+        this.maxAttempts = maxAttempts;
+    }
+
+    public ChatMatchmaker(@NotNull BaristaQueue queue, @NotNull ChatSessionStore store) {
+        this(queue, store, DEFAULT_MAX_ATTEMPTS);
     }
 
     /**
@@ -105,17 +129,48 @@ public class ChatMatchmaker {
         while (!work.isEmpty()) {
             Match match = work.poll();
             try {
-                if (!store.activate(match.sessionId(), match.baristaId())) {
+                if (store.activate(match.sessionId(), match.baristaId())) {
+                    failures.remove(match);
+                } else {
+                    failures.remove(match);
                     work.addAll(queue.matchFailed(match, false));
                 }
             } catch (ChatBaristaUnavailableException e) {
                 log.warn("Dropping barista {} from the chat queue: {}", match.baristaId(), e.getMessage());
+                failures.remove(match);
                 work.addAll(queue.baristaRejected(match));
             } catch (RuntimeException e) {
-                log.error("Could not make match {} durable; it will be retried by the next chat operation", match, e);
-                queue.matchFailed(match, true);
-                return;
+                transientFailure(match, work, e);
             }
+        }
+    }
+
+    /**
+     * A write failed for a reason that is not the barista's. Every match still in the batch is tentative in
+     * the queue but was never written, so they ALL go back (last first, so the first ends up at the front and
+     * FIFO holds), not just the failed one; otherwise those customers would be stuck WAITING in the database
+     * while their baristas sat BUSY in memory. The failed pair is retried by the next operation, but only
+     * {@code maxAttempts} times in a row: a failure that persists for one pair (a constraint nobody mapped)
+     * would otherwise block the head of both lines forever, so after that the barista is dropped as if
+     * permanently unusable and the customer is paired with the next ready barista.
+     */
+    private void transientFailure(Match failed, Deque<Match> work, RuntimeException e) {
+        List<Match> rest = new ArrayList<>(work);
+        work.clear();
+        Collections.reverse(rest);
+        for (Match m : rest) {
+            queue.matchFailed(m, true);
+        }
+        int attempts = failures.merge(failed, 1, Integer::sum);
+        if (attempts >= maxAttempts) {
+            failures.remove(failed);
+            log.error("Match of session {} with barista {} failed {} times in a row; dropping barista {} from the queue",
+                    failed.sessionId(), failed.baristaId(), attempts, failed.baristaId(), e);
+            work.addAll(queue.baristaRejected(failed));
+        } else {
+            log.error("Could not make match {} durable (attempt {}/{}); it will be retried by the next chat operation",
+                    failed, attempts, maxAttempts, e);
+            queue.matchFailed(failed, true);
         }
     }
 }

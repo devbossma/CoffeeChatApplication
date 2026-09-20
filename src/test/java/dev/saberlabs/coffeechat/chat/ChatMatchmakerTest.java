@@ -97,6 +97,83 @@ class ChatMatchmakerTest {
     }
 
     @Nested
+    @DisplayName("a transient failure in the middle of a batch")
+    class BatchFailureTests {
+
+        @Test
+        @DisplayName("puts EVERY tentative pair back, in the original order, and leaves nothing BUSY without a committed ACTIVE row")
+        void wholeBatchRestored() {
+            when(store.activate(anyLong(), anyLong())).thenThrow(new IllegalStateException("db down"));
+            ChatMatchmaker patient = new ChatMatchmaker(queue, store, 100);
+            queue.baristaReady(7);
+            queue.baristaReady(8);
+            java.util.List<Match> batch = new java.util.ArrayList<>();
+            batch.addAll(queue.customerWaiting(1));
+            batch.addAll(queue.customerWaiting(2));
+            assertEquals(java.util.List.of(new Match(1, 7), new Match(2, 8)), batch);
+            assertEquals(2, queue.busyCount());
+
+            patient.settleAll(batch);
+
+            assertEquals(0, queue.busyCount());
+            assertTrue(queue.isWaiting(1));
+            assertTrue(queue.isWaiting(2));
+            assertTrue(queue.isReady(7));
+            assertTrue(queue.isReady(8));
+            assertEquals(java.util.List.of(new Match(1, 7), new Match(2, 8)), queue.pairPending());
+        }
+    }
+
+    @Nested
+    @DisplayName("a poison pair (a failure that never goes away)")
+    class PoisonPairTests {
+
+        @Test
+        @DisplayName("is retried maxAttempts times in a row, then the barista is dropped and the customer goes to the next barista")
+        void givenUpAfterCap() {
+            sessionsExist(1);
+            when(store.activate(1, 7)).thenThrow(new IllegalStateException("unmapped constraint"));
+            when(store.activate(1, 8)).thenReturn(true);
+            queue.baristaReady(7);
+            queue.baristaReady(8);
+
+            matchmaker.open(1001);
+            assertTrue(queue.isReady(7));
+            matchmaker.heal();
+            assertTrue(queue.isReady(7));
+            matchmaker.heal();
+
+            verify(store, times(3)).activate(1, 7);
+            assertFalse(queue.isReady(7));
+            assertFalse(queue.isBusy(7));
+            verify(store).activate(1, 8);
+            assertEquals(Optional.of(8L), queue.baristaOf(1));
+        }
+
+        @Test
+        @DisplayName("a success in between resets the count")
+        void successResets() {
+            sessionsExist(1);
+            when(store.activate(1, 7)).thenThrow(new IllegalStateException("blip")).thenThrow(new IllegalStateException("blip"))
+                    .thenReturn(true);
+            queue.baristaReady(7);
+
+            matchmaker.open(1001);
+            matchmaker.heal();
+            matchmaker.heal();
+
+            assertEquals(Optional.of(7L), queue.baristaOf(1));
+            assertTrue(queue.isBusy(7));
+        }
+
+        @Test
+        @DisplayName("the cap must be at least 1")
+        void capValidated() {
+            assertThrows(IllegalArgumentException.class, () -> new ChatMatchmaker(queue, store, 0));
+        }
+    }
+
+    @Nested
     @DisplayName("a permanently unusable barista")
     class PermanentFailureTests {
 

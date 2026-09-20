@@ -155,6 +155,26 @@ class ChatSessionRepositoryTest extends AbstractRepositoryTest {
     }
 
     @Nested
+    @DisplayName("findForShareById()")
+    class FindForShareByIdTests {
+
+        @Test
+        @DisplayName("finds the session (taking a shared row lock for the rest of the transaction)")
+        void finds() {
+            ChatSessionEntity saved = sessionRepository.saveAndFlush(
+                    new ChatSessionEntity(customer, null, SessionStatus.WAITING, Instant.now()));
+
+            assertEquals(saved.id(), sessionRepository.findForShareById(saved.id()).orElseThrow().id());
+        }
+
+        @Test
+        @DisplayName("is empty for an unknown id")
+        void unknown() {
+            assertTrue(sessionRepository.findForShareById(404L).isEmpty());
+        }
+    }
+
+    @Nested
     @DisplayName("activateIfWaiting()")
     class ActivateIfWaitingTests {
 

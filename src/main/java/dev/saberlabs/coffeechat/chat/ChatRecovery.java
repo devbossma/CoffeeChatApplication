@@ -33,34 +33,40 @@ public class ChatRecovery {
     }
 
     /**
-     * Void on purpose: Spring publishes a listener's non-void return value as a new event. One bad row is
-     * logged and skipped so it can never abort startup.
+     * Void on purpose: Spring publishes a listener's non-void return value as a new event. Nothing here may
+     * abort application start: a database failure while reading, or one bad row, is logged and skipped.
      */
     @EventListener(ApplicationReadyEvent.class)
     public void recover() {
-        List<SessionView> active = store.findByStatus(SessionStatus.ACTIVE);
         int restored = 0;
-        for (SessionView s : active) {
-            try {
-                if (s.baristaId() != null) {
-                    queue.restoreActiveAssignment(s.id(), s.baristaId());
-                    restored++;
+        try {
+            for (SessionView s : store.findByStatus(SessionStatus.ACTIVE)) {
+                try {
+                    if (s.baristaId() != null) {
+                        queue.restoreActiveAssignment(s.id(), s.baristaId());
+                        restored++;
+                    }
+                } catch (RuntimeException e) {
+                    log.error("Could not restore active chat session {}", s.id(), e);
                 }
-            } catch (RuntimeException e) {
-                log.error("Could not restore active chat session {}", s.id(), e);
             }
+        } catch (RuntimeException e) {
+            log.error("Could not load active chat sessions; chat recovery of active sessions skipped", e);
         }
-        List<SessionView> waiting = store.findByStatus(SessionStatus.WAITING);
-        for (SessionView s : waiting) {
-            try {
-                matchmaker.settleAll(queue.customerWaiting(s.id()));
-                restored++;
-            } catch (RuntimeException e) {
-                log.error("Could not restore waiting chat session {}", s.id(), e);
+        try {
+            for (SessionView s : store.findByStatus(SessionStatus.WAITING)) {
+                try {
+                    matchmaker.settleAll(queue.customerWaiting(s.id()));
+                    restored++;
+                } catch (RuntimeException e) {
+                    log.error("Could not restore waiting chat session {}", s.id(), e);
+                }
             }
+        } catch (RuntimeException e) {
+            log.error("Could not load waiting chat sessions; chat recovery of waiting sessions skipped", e);
         }
         if (restored > 0) {
-            log.info("Recovered chat state: {} session(s) ({} active, {} waiting on record)", restored, active.size(), waiting.size());
+            log.info("Recovered chat state: {} session(s)", restored);
         }
     }
 }

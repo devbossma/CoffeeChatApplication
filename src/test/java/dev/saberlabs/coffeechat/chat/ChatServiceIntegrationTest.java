@@ -200,7 +200,7 @@ class ChatServiceIntegrationTest extends AbstractIntegrationTest {
         @DisplayName("null, empty, ASCII-blank and Unicode-space-only content is rejected, and nothing is stored")
         void blankRejected() {
             for (String blank : new String[]{null, "", "   ", "\t\n", " ", "    　"}) {
-                assertThrows(IllegalArgumentException.class, () -> chat.sendMessage(as(alice), session.id(), blank));
+                assertThrows(InvalidChatMessageException.class, () -> chat.sendMessage(as(alice), session.id(), blank));
             }
             assertEquals(List.of("Bob joined the chat"), texts());
         }
@@ -209,7 +209,7 @@ class ChatServiceIntegrationTest extends AbstractIntegrationTest {
         @DisplayName("2000 characters is accepted, 2001 is rejected")
         void lengthLimit() {
             assertEquals(2000, chat.sendMessage(as(alice), session.id(), "x".repeat(2000)).message().content().length());
-            assertThrows(IllegalArgumentException.class, () -> chat.sendMessage(as(alice), session.id(), "x".repeat(2001)));
+            assertThrows(InvalidChatMessageException.class, () -> chat.sendMessage(as(alice), session.id(), "x".repeat(2001)));
         }
 
         @Test
@@ -310,6 +310,111 @@ class ChatServiceIntegrationTest extends AbstractIntegrationTest {
 
             assertFalse(first.orderId().equals(second.orderId()));
             assertEquals(2, count("SELECT count(*) FROM orders"));
+        }
+    }
+
+    @Nested
+    @DisplayName("the store's own check when a message is inserted")
+    class InsertTimeCheckTests {
+
+        @Test
+        @DisplayName("a session that ended between the caller's check and the insert receives nothing (deterministic: ended directly in the database)")
+        void endedBetweenCheckAndInsert() {
+            jdbc.update("UPDATE chat_sessions SET status = 'INACTIVE' WHERE id = ?", session.id());
+
+            assertThrows(SessionNotActiveException.class,
+                    () -> store.addMessage(session.id(), MessageType.CHAT_MESSAGE, alice.id(), "Alice", "too late", null));
+            assertEquals(List.of("Bob joined the chat"), texts());
+        }
+
+        @Test
+        @DisplayName("a barista who was un-assigned between the check and the insert may not post")
+        void unassignedBarista() {
+            UserEntity bea = barista("Bea");
+            jdbc.update("UPDATE chat_sessions SET barista_id = ? WHERE id = ?", bea.id(), session.id());
+
+            assertThrows(NotChatParticipantException.class,
+                    () -> store.addMessage(session.id(), MessageType.CHAT_MESSAGE, bob.id(), "Bob", "still me", null));
+            assertEquals(1, store.history(session.id()).size());
+            assertEquals(MessageType.CHAT_MESSAGE,
+                    store.addMessage(session.id(), MessageType.CHAT_MESSAGE, bea.id(), "Bea", "hello", null).type());
+        }
+
+        @Test
+        @DisplayName("a stranger is refused, and a CHAT_MESSAGE needs a sender")
+        void strangerAndNoSender() {
+            UserEntity carl = customer("Carl");
+
+            assertThrows(NotChatParticipantException.class,
+                    () -> store.addMessage(session.id(), MessageType.CHAT_MESSAGE, carl.id(), "Carl", "hi", null));
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.addMessage(session.id(), MessageType.CHAT_MESSAGE, null, "Nobody", "hi", null));
+        }
+
+        @Test
+        @DisplayName("the system may still write to an ended session (the /order confirmation must not be lost)")
+        void systemMessageAlwaysAllowed() {
+            chat.endSession(as(alice), session.id());
+
+            assertEquals(MessageType.SYSTEM_MESSAGE,
+                    store.addMessage(session.id(), MessageType.SYSTEM_MESSAGE, null, "System", "note", null).type());
+        }
+
+        @Test
+        @DisplayName("a message racing the end of its session either lands before the end or is refused; never after")
+        void raceWithEnd() throws Exception {
+            var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+            try {
+                var go = new java.util.concurrent.CountDownLatch(1);
+                var send = pool.submit(() -> {
+                    go.await();
+                    try {
+                        store.addMessage(session.id(), MessageType.CHAT_MESSAGE, alice.id(), "Alice", "racing", null);
+                        return true;
+                    } catch (SessionNotActiveException e) {
+                        return false;
+                    }
+                });
+                var end = pool.submit(() -> {
+                    go.await();
+                    return chat.endSession(as(alice), session.id());
+                });
+                go.countDown();
+                boolean landed = send.get(30, java.util.concurrent.TimeUnit.SECONDS);
+                end.get(30, java.util.concurrent.TimeUnit.SECONDS);
+
+                List<MessageView> history = store.history(session.id());
+                long endedAt = history.stream().filter(m -> m.content().equals("The chat has ended")).findFirst().orElseThrow().id();
+                boolean racingBeforeEnd = history.stream().anyMatch(m -> m.content().equals("racing") && m.id() < endedAt);
+                assertEquals(landed, racingBeforeEnd);
+                assertFalse(history.stream().anyMatch(m -> m.content().equals("racing") && m.id() > endedAt));
+            } finally {
+                pool.shutdownNow();
+            }
+        }
+    }
+
+    @Nested
+    @DisplayName("transaction guard")
+    class TransactionGuardTests {
+
+        @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
+
+        @Test
+        @DisplayName("every write operation refuses to run inside a caller's transaction, and changes nothing")
+        void refusesInsideTransaction() {
+            var template = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+            UserEntity carl = customer("Carl");
+
+            assertThrows(IllegalStateException.class, () -> template.executeWithoutResult(s -> chat.startChat(as(carl))));
+            assertThrows(IllegalStateException.class, () -> template.executeWithoutResult(s -> chat.baristaReady(as(bob))));
+            assertThrows(IllegalStateException.class, () -> template.executeWithoutResult(s -> chat.baristaOffline(as(bob))));
+            assertThrows(IllegalStateException.class, () -> template.executeWithoutResult(s -> chat.endSession(as(alice), session.id())));
+            assertThrows(IllegalStateException.class, () -> template.executeWithoutResult(s -> chat.sendMessage(as(alice), session.id(), "/order latte")));
+
+            assertEquals(1, count("SELECT count(*) FROM chat_sessions"));
+            assertEquals(SessionStatus.ACTIVE, store.find(session.id()).orElseThrow().status());
+            assertEquals(0, count("SELECT count(*) FROM orders"));
         }
     }
 

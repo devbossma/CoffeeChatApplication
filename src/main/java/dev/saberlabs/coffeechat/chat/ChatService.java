@@ -24,6 +24,7 @@ import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.EnumSet;
 import java.util.List;
@@ -57,8 +58,9 @@ import java.util.Set;
  * timeout, a double tap) is a new message and places a SECOND order. What is guaranteed is that one accepted
  * message yields exactly one stored CHAT_MESSAGE and at most one order, even when T3 is retried.
  *
- * <p>A message posted in the instant a session ends may still be stored: the ACTIVE check and the insert are
- * two steps. Harmless (the history stays consistent and ordered) and not worth a lock.
+ * <p>The ACTIVE/participant checks here are a fast, friendly first pass; the authoritative check is repeated
+ * inside the insert's own transaction under a row lock ({@code ChatSessionStore.addMessage}), so a session that
+ * ends between the two cannot receive a message.
  */
 @Service
 public class ChatService {
@@ -108,17 +110,20 @@ public class ChatService {
      * @throws ChatSessionAlreadyOpenException if they already have an open session (409, with its id)
      */
     public SessionView startChat(@NotNull Actor actor) {
+        requireNoTransaction();
         UserEntity customer = requireUser(actor, CUSTOMERS, "start a chat");
         return matchmaker.open(customer.id());
     }
 
     /** A barista becomes available for the longest-waiting customer. */
     public void baristaReady(@NotNull Actor actor) {
+        requireNoTransaction();
         matchmaker.baristaReady(requireBarista(actor));
     }
 
     /** A barista stops taking new chats (a chat in progress continues). */
     public void baristaOffline(@NotNull Actor actor) {
+        requireNoTransaction();
         matchmaker.baristaOffline(requireBarista(actor));
     }
 
@@ -130,6 +135,7 @@ public class ChatService {
      * @throws NotChatParticipantException  if the user is neither participant nor a MANAGER
      */
     public boolean endSession(@NotNull Actor actor, long sessionId) {
+        requireNoTransaction();
         UserEntity user = requireUser(actor, ANYONE, "end a chat");
         SessionView session = requireSession(sessionId);
         requireParticipantOrManager(user, session, "end it");
@@ -139,13 +145,14 @@ public class ChatService {
     /**
      * Posts a message (and, for a customer's {@code /order} command, places the order).
      *
-     * @throws IllegalArgumentException     if the content is null, blank (including only Unicode spaces) or over
+     * @throws InvalidChatMessageException  if the content is null, blank (including only Unicode spaces) or over
      *                                      {@value #MAX_MESSAGE_LENGTH} characters (400)
      * @throws ChatSessionNotFoundException if there is no such session (404)
      * @throws NotChatParticipantException  if the user is not the session's customer or barista (403)
      * @throws SessionNotActiveException    if the session is WAITING or ended (409)
      */
     public SendResult sendMessage(@NotNull Actor actor, long sessionId, @Nullable String content) {
+        requireNoTransaction();
         UserEntity sender = requireUser(actor, EnumSet.of(Role.CUSTOMER, Role.BARISTA), "post a chat message");
         String text = validContent(content);
         SessionView session = requireSession(sessionId);
@@ -227,13 +234,24 @@ public class ChatService {
 
     private static String validContent(@Nullable String content) {
         if (content == null || TextRules.isBlank(content)) {
-            throw new IllegalArgumentException("A chat message cannot be blank");
+            throw new InvalidChatMessageException("A chat message cannot be blank");
         }
         String text = TextRules.strip(content);
         if (text.length() > MAX_MESSAGE_LENGTH) {
-            throw new IllegalArgumentException("A chat message is limited to " + MAX_MESSAGE_LENGTH + " characters");
+            throw new InvalidChatMessageException("A chat message is limited to " + MAX_MESSAGE_LENGTH + " characters");
         }
         return text;
+    }
+
+    /**
+     * These methods are several independent transactions on purpose (chat messages, the order, its
+     * confirmation). A caller that wraps them in one transaction would silently merge them, so a failure
+     * in a later step could undo an order that was already reported placed. Fail fast instead.
+     */
+    private static void requireNoTransaction() {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("ChatService must not be called inside a transaction: its steps are separate transactions by design");
+        }
     }
 
     private long requireBarista(Actor actor) {

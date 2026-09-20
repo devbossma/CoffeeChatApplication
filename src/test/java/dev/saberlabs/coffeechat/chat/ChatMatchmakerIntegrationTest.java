@@ -464,24 +464,25 @@ class ChatMatchmakerIntegrationTest extends AbstractIntegrationTest {
         @DisplayName("history is ordered by sent_at then id, and carries sender ids and order links")
         void ordered() {
             UserEntity alice = customer("Alice");
+            matchmaker.baristaReady(barista("Bob").id());
             SessionView view = matchmaker.open(alice.id());
 
             for (int i = 0; i < 20; i++) {
                 store.addMessage(view.id(), MessageType.CHAT_MESSAGE, alice.id(), "Alice", "m" + i, null);
             }
 
-            List<String> expected = new ArrayList<>();
+            List<String> expected = new ArrayList<>(List.of("Bob joined the chat"));
             for (int i = 0; i < 20; i++) {
                 expected.add("m" + i);
             }
             assertEquals(expected, texts(view.id()));
-            assertEquals(alice.id(), store.history(view.id()).get(0).senderId());
+            assertEquals(alice.id(), store.history(view.id()).get(1).senderId());
         }
 
         @Test
         @DisplayName("a message for an unknown session is rejected")
         void unknownSession() {
-            assertThrows(IllegalStateException.class,
+            assertThrows(ChatSessionNotFoundException.class,
                     () -> store.addMessage(31337L, MessageType.SYSTEM_MESSAGE, null, "System", "hi", null));
         }
 
@@ -489,6 +490,7 @@ class ChatMatchmakerIntegrationTest extends AbstractIntegrationTest {
         @DisplayName("the database CHECK is the backstop for blank content")
         void blankRejectedByDatabase() {
             UserEntity alice = customer("Alice");
+            matchmaker.baristaReady(barista("Bob").id());
             SessionView view = matchmaker.open(alice.id());
 
             assertThrows(org.springframework.dao.DataIntegrityViolationException.class,

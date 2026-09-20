@@ -59,17 +59,5 @@ class CustomerControllerTest {
                                     {"name": "   "}"""))
                     .andExpect(status().isBadRequest());
         }
-
-        @Test
-        @DisplayName("400 when the service rejects the name")
-        void serviceRejects() throws Exception {
-            when(customers.create(anyString())).thenThrow(new IllegalArgumentException("bad name"));
-
-            mvc.perform(post("/api/customers")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content("""
-                                    {"name": "x"}"""))
-                    .andExpect(status().isBadRequest());
-        }
     }
 }
