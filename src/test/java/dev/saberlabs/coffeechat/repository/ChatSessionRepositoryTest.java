@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -99,6 +100,132 @@ class ChatSessionRepositoryTest extends AbstractRepositoryTest {
 
             assertEquals(1, waiting.size());
             assertEquals(customer.id(), waiting.get(0).customer().id());
+        }
+    }
+
+    @Nested
+    @DisplayName("findByStatusOrderByIdAsc()")
+    class FindByStatusOrderByIdAscTests {
+
+        @Test
+        @DisplayName("returns the sessions in creation order")
+        void oldestFirst() {
+            UserEntity second = userRepository.saveAndFlush(new UserEntity("Carl", Role.CUSTOMER));
+            UserEntity third = userRepository.saveAndFlush(new UserEntity("Dee", Role.CUSTOMER));
+            ChatSessionEntity a = sessionRepository.saveAndFlush(new ChatSessionEntity(customer, null, SessionStatus.WAITING, Instant.now()));
+            ChatSessionEntity b = sessionRepository.saveAndFlush(new ChatSessionEntity(second, null, SessionStatus.WAITING, Instant.now()));
+            ChatSessionEntity c = sessionRepository.saveAndFlush(new ChatSessionEntity(third, null, SessionStatus.WAITING, Instant.now()));
+
+            List<ChatSessionEntity> waiting = sessionRepository.findByStatusOrderByIdAsc(SessionStatus.WAITING);
+
+            assertEquals(List.of(a.id(), b.id(), c.id()), waiting.stream().map(ChatSessionEntity::id).toList());
+        }
+
+        @Test
+        @DisplayName("is empty when no session has that status")
+        void emptyWhenNone() {
+            assertTrue(sessionRepository.findByStatusOrderByIdAsc(SessionStatus.ACTIVE).isEmpty());
+        }
+    }
+
+    @Nested
+    @DisplayName("activateIfWaiting()")
+    class ActivateIfWaitingTests {
+
+        @Test
+        @DisplayName("activates a WAITING session with the barista and reports 1")
+        void activates() {
+            UserEntity barista = userRepository.saveAndFlush(new UserEntity("Bob", Role.BARISTA));
+            ChatSessionEntity waiting = sessionRepository.saveAndFlush(
+                    new ChatSessionEntity(customer, null, SessionStatus.WAITING, Instant.now()));
+
+            int updated = sessionRepository.activateIfWaiting(waiting.id(), barista);
+            entityManager.clear();
+
+            assertEquals(1, updated);
+            ChatSessionEntity reloaded = sessionRepository.findById(waiting.id()).orElseThrow();
+            assertEquals(SessionStatus.ACTIVE, reloaded.status());
+            assertEquals(barista.id(), reloaded.barista().id());
+        }
+
+        @Test
+        @DisplayName("leaves an INACTIVE session alone and reports 0 (it ended in the meantime)")
+        void skipsInactive() {
+            UserEntity barista = userRepository.saveAndFlush(new UserEntity("Bob", Role.BARISTA));
+            ChatSessionEntity ended = new ChatSessionEntity(customer, null, SessionStatus.WAITING, Instant.now());
+            ended.status(SessionStatus.INACTIVE);
+            ended = sessionRepository.saveAndFlush(ended);
+
+            assertEquals(0, sessionRepository.activateIfWaiting(ended.id(), barista));
+            entityManager.clear();
+
+            ChatSessionEntity reloaded = sessionRepository.findById(ended.id()).orElseThrow();
+            assertEquals(SessionStatus.INACTIVE, reloaded.status());
+            assertNull(reloaded.barista());
+        }
+
+        @Test
+        @DisplayName("reports 0 for a session that is already ACTIVE (never re-assigns a barista)")
+        void skipsAlreadyActive() {
+            UserEntity first = userRepository.saveAndFlush(new UserEntity("Bob", Role.BARISTA));
+            UserEntity second = userRepository.saveAndFlush(new UserEntity("Bea", Role.BARISTA));
+            ChatSessionEntity active = sessionRepository.saveAndFlush(
+                    new ChatSessionEntity(customer, first, SessionStatus.ACTIVE, Instant.now()));
+
+            assertEquals(0, sessionRepository.activateIfWaiting(active.id(), second));
+            entityManager.clear();
+
+            assertEquals(first.id(), sessionRepository.findById(active.id()).orElseThrow().barista().id());
+        }
+
+        @Test
+        @DisplayName("reports 0 for an unknown session")
+        void unknown() {
+            UserEntity barista = userRepository.saveAndFlush(new UserEntity("Bob", Role.BARISTA));
+            assertEquals(0, sessionRepository.activateIfWaiting(404L, barista));
+        }
+    }
+
+    @Nested
+    @DisplayName("endIfNotInactive()")
+    class EndIfNotInactiveTests {
+
+        @Test
+        @DisplayName("ends a WAITING session and reports 1")
+        void endsWaiting() {
+            ChatSessionEntity waiting = sessionRepository.saveAndFlush(
+                    new ChatSessionEntity(customer, null, SessionStatus.WAITING, Instant.now()));
+
+            assertEquals(1, sessionRepository.endIfNotInactive(waiting.id()));
+            entityManager.clear();
+
+            assertEquals(SessionStatus.INACTIVE, sessionRepository.findById(waiting.id()).orElseThrow().status());
+        }
+
+        @Test
+        @DisplayName("ends an ACTIVE session and reports 1")
+        void endsActive() {
+            UserEntity barista = userRepository.saveAndFlush(new UserEntity("Bob", Role.BARISTA));
+            ChatSessionEntity active = sessionRepository.saveAndFlush(
+                    new ChatSessionEntity(customer, barista, SessionStatus.ACTIVE, Instant.now()));
+
+            assertEquals(1, sessionRepository.endIfNotInactive(active.id()));
+        }
+
+        @Test
+        @DisplayName("a second end reports 0, so only one of two concurrent ends gets to free the barista")
+        void secondEndIsZero() {
+            ChatSessionEntity waiting = sessionRepository.saveAndFlush(
+                    new ChatSessionEntity(customer, null, SessionStatus.WAITING, Instant.now()));
+
+            assertEquals(1, sessionRepository.endIfNotInactive(waiting.id()));
+            assertEquals(0, sessionRepository.endIfNotInactive(waiting.id()));
+        }
+
+        @Test
+        @DisplayName("reports 0 for an unknown session")
+        void unknown() {
+            assertEquals(0, sessionRepository.endIfNotInactive(404L));
         }
     }
 

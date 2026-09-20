@@ -140,7 +140,7 @@ class ChatMessageRepositoryTest extends AbstractRepositoryTest {
     }
 
     @Nested
-    @DisplayName("findBySessionIdOrderBySentAtAsc()")
+    @DisplayName("findBySessionIdOrderBySentAtAscIdAsc()")
     class FindBySessionIdOrderBySentAtAscTests {
 
         @Test
@@ -154,9 +154,30 @@ class ChatMessageRepositoryTest extends AbstractRepositoryTest {
             messageRepository.saveAndFlush(new ChatMessageEntity(
                     session, MessageType.CHAT_MESSAGE, customer, "Alice", "third", base.plusSeconds(2), null));
 
-            List<ChatMessageEntity> history = messageRepository.findBySessionIdOrderBySentAtAsc(session.id());
+            List<ChatMessageEntity> history = messageRepository.findBySessionIdOrderBySentAtAscIdAsc(session.id());
 
             assertEquals(List.of("first", "second", "third"), history.stream().map(ChatMessageEntity::content).toList());
+        }
+
+        @Test
+        @DisplayName("messages written at the very same instant keep their write order (id breaks the tie)")
+        void sameInstantKeepsWriteOrder() {
+            Instant same = Instant.now();
+            messageRepository.saveAndFlush(new ChatMessageEntity(session, MessageType.CHAT_MESSAGE, customer, "Alice", "one", same, null));
+            messageRepository.saveAndFlush(new ChatMessageEntity(session, MessageType.CHAT_MESSAGE, customer, "Alice", "two", same, null));
+            messageRepository.saveAndFlush(new ChatMessageEntity(session, MessageType.SYSTEM_MESSAGE, null, "System", "three", same, null));
+
+            List<ChatMessageEntity> history = messageRepository.findBySessionIdOrderBySentAtAscIdAsc(session.id());
+
+            assertEquals(List.of("one", "two", "three"), history.stream().map(ChatMessageEntity::content).toList());
+        }
+
+        @Test
+        @DisplayName("returns only that session's messages")
+        void onlyThatSession() {
+            messageRepository.saveAndFlush(new ChatMessageEntity(session, MessageType.CHAT_MESSAGE, customer, "Alice", "mine", Instant.now(), null));
+
+            assertTrue(messageRepository.findBySessionIdOrderBySentAtAscIdAsc(session.id() + 1000).isEmpty());
         }
     }
 }
