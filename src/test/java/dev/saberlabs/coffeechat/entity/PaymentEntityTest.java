@@ -108,6 +108,60 @@ class PaymentEntityTest {
     }
 
     @Nested
+    @DisplayName("recordAttempt()")
+    class RecordAttemptTests {
+
+        private PaymentEntity failedPayment() {
+            return new PaymentEntity(ORDER, PaymentProvider.PAYPAL, new BigDecimal("2.50"), PaymentStatus.FAILED,
+                    "declined", NOW, NOW);
+        }
+
+        @Test
+        @DisplayName("a retry on a FAILED payment updates provider, status, detail and updatedAt but never the amount")
+        void updatesInPlace() {
+            PaymentEntity payment = failedPayment();
+            Instant later = NOW.plusSeconds(30);
+
+            payment.recordAttempt(PaymentProvider.CASH, PaymentStatus.PAID, "change $0.50", later);
+
+            assertEquals(PaymentProvider.CASH, payment.provider());
+            assertEquals(PaymentStatus.PAID, payment.status());
+            assertEquals("change $0.50", payment.detail());
+            assertEquals(later, payment.updatedAt());
+            assertEquals(NOW, payment.createdAt());
+            assertEquals(new BigDecimal("2.50"), payment.amount());
+        }
+
+        @Test
+        @DisplayName("a second failure leaves it FAILED")
+        void failsAgain() {
+            PaymentEntity payment = failedPayment();
+            payment.recordAttempt(PaymentProvider.STRIPE, PaymentStatus.FAILED, "declined again", NOW.plusSeconds(1));
+            assertEquals(PaymentStatus.FAILED, payment.status());
+        }
+
+        @Test
+        @DisplayName("a PAID payment can never be retried")
+        void paidIsFinal() {
+            PaymentEntity paid = new PaymentEntity(ORDER, PaymentProvider.CASH, new BigDecimal("2.50"),
+                    PaymentStatus.PAID, null, NOW, NOW);
+            assertThrows(IllegalStateException.class,
+                    () -> paid.recordAttempt(PaymentProvider.CASH, PaymentStatus.PAID, null, NOW));
+        }
+
+        @Test
+        @DisplayName("rejects null arguments")
+        void rejectsNulls() {
+            assertThrows(NullPointerException.class,
+                    () -> failedPayment().recordAttempt(null, PaymentStatus.PAID, null, NOW));
+            assertThrows(NullPointerException.class,
+                    () -> failedPayment().recordAttempt(PaymentProvider.CASH, null, null, NOW));
+            assertThrows(NullPointerException.class,
+                    () -> failedPayment().recordAttempt(PaymentProvider.CASH, PaymentStatus.PAID, null, null));
+        }
+    }
+
+    @Nested
     @DisplayName("equals()")
     class EqualsTests {
 

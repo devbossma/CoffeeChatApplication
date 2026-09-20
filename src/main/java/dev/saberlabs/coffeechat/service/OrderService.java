@@ -62,6 +62,18 @@ public class OrderService {
         return orders.findById(orderId).orElseThrow(() -> new OrderNotFoundException(orderId));
     }
 
+    /**
+     * Loads the order with a row lock, for payment: serialises concurrent payers of one order before
+     * the gateway is called.
+     *
+     * @throws OrderNotFoundException if no order has that id
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public OrderEntity requireForPayment(@NotNull Long orderId) {
+        Objects.requireNonNull(orderId, "orderId cannot be null");
+        return orders.findForUpdateById(orderId).orElseThrow(() -> new OrderNotFoundException(orderId));
+    }
+
     /** Forces pending changes to the database now, so the {@code @Version} check fires here. */
     @Transactional(propagation = Propagation.MANDATORY)
     public void flush() {

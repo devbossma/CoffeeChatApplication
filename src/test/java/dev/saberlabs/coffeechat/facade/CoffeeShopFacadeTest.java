@@ -213,11 +213,81 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
             UserEntity customer = customer("Alice");
             Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
 
-            Order done = facade.processOrder(placed.id(), PaymentProvider.CASH);
+            OrderOutcome outcome = facade.processOrder(placed.id(), PaymentProvider.CASH);
 
-            assertEquals(OrderStatus.FULFILLED, done.status());
+            assertEquals(OrderStatus.FULFILLED, outcome.order().status());
+            assertTrue(outcome.payment().isPaid());
+            assertTrue(outcome.fulfilled());
             assertEquals(1, fulfilledOrdersOf(customer.id()));
+            assertEquals(1, payments.count());
             assertTrue(invoker.history().containsAll(List.of("PrepareOrder", "PayOrder", "FulfillOrder")));
+        }
+    }
+
+    @Nested
+    @DisplayName("processOrder() with a declining gateway")
+    class ProcessOrderDeclinedTests {
+
+        @Test
+        @DisplayName("stops on a FAILED payment without fulfilling; the order stays READY and a retry then completes it")
+        void stopsOnFailedPayment() {
+            CoffeeShopFacade declining = facadeWith(dev.saberlabs.coffeechat.support.TestGateways.decliningPayPal());
+            UserEntity customer = customer("Alice");
+            Order placed = declining.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
+
+            OrderOutcome outcome = declining.processOrder(placed.id(), PaymentProvider.PAYPAL);
+
+            assertTrue(!outcome.payment().isPaid());
+            assertTrue(!outcome.fulfilled());
+            assertEquals(OrderStatus.READY, outcome.order().status());
+            assertEquals(0, fulfilledOrdersOf(customer.id()));
+            assertEquals(1, payments.count());
+
+            assertTrue(declining.payOrder(placed.id(), PaymentProvider.CASH).isPaid());
+            declining.fulfillOrder(placed.id());
+
+            assertEquals(OrderStatus.FULFILLED, declining.getOrder(placed.id()).status());
+            assertEquals(1, fulfilledOrdersOf(customer.id()));
+            assertEquals(1, payments.count(), "the retry reused the FAILED row");
+        }
+    }
+
+    @Nested
+    @DisplayName("payOrder() / fulfillOrder()")
+    class PayAndFulfilTests {
+
+        @Test
+        @DisplayName("fulfilling an unpaid order is rejected (409 conflict) and earns the customer nothing")
+        void unpaidFulfilRejected() {
+            UserEntity customer = customer("Alice");
+            Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
+            facade.prepareOrder(placed.id());
+
+            assertThrows(OrderStateConflictException.class, () -> facade.fulfillOrder(placed.id()));
+
+            assertEquals(OrderStatus.READY, facade.getOrder(placed.id()).status());
+            assertEquals(0, fulfilledOrdersOf(customer.id()));
+        }
+
+        @Test
+        @DisplayName("a second payment of a PAID order is rejected")
+        void doublePayRejected() {
+            UserEntity customer = customer("Alice");
+            Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
+            facade.prepareOrder(placed.id());
+            facade.payOrder(placed.id(), PaymentProvider.CASH);
+
+            assertThrows(OrderStateConflictException.class, () -> facade.payOrder(placed.id(), PaymentProvider.CASH));
+            assertEquals(1, payments.count());
+        }
+
+        @Test
+        @DisplayName("paying an order that is not READY is rejected")
+        void payBeforeReady() {
+            UserEntity customer = customer("Alice");
+            Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
+
+            assertThrows(OrderStateConflictException.class, () -> facade.payOrder(placed.id(), PaymentProvider.CASH));
         }
     }
 

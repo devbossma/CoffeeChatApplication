@@ -21,6 +21,7 @@ import dev.saberlabs.coffeechat.prototype.OrderPrototype;
 import dev.saberlabs.coffeechat.repository.UserRepository;
 import dev.saberlabs.coffeechat.service.CustomerService;
 import dev.saberlabs.coffeechat.service.OrderService;
+import dev.saberlabs.coffeechat.service.PaymentService;
 import dev.saberlabs.coffeechat.singleton.CoffeeShop;
 import dev.saberlabs.coffeechat.strategy.PricingStrategy;
 import dev.saberlabs.coffeechat.strategy.PricingStrategyResolver;
@@ -48,6 +49,7 @@ public class CoffeeShopFacade {
     private final CoffeePreparationResolver preparations;
     private final PaymentGatewayResolver gateways;
     private final OrderService orders;
+    private final PaymentService payments;
     private final CustomerService customers;
     private final UserRepository users;
     private final OrderEventPublisher events;
@@ -60,6 +62,7 @@ public class CoffeeShopFacade {
                             CoffeePreparationResolver preparations,
                             PaymentGatewayResolver gateways,
                             OrderService orders,
+                            PaymentService payments,
                             CustomerService customers,
                             UserRepository users,
                             OrderEventPublisher events,
@@ -71,6 +74,7 @@ public class CoffeeShopFacade {
         this.preparations = preparations;
         this.gateways = gateways;
         this.orders = orders;
+        this.payments = payments;
         this.customers = customers;
         this.users = users;
         this.events = events;
@@ -123,16 +127,26 @@ public class CoffeeShopFacade {
         invoker.executeCommand(new PrepareOrderCommand(orderId, orders, events, preparations));
     }
 
-    /** Collect payment for an order through {@code provider}'s Adapter. */
+    /**
+     * Collect payment for an order through {@code provider}'s Adapter. A gateway decline is returned
+     * as a FAILED {@link PaymentResult} (and recorded), not thrown; a FAILED order can be paid again.
+     *
+     * @throws OrderStateConflictException if the order is not READY or is already PAID
+     */
     public PaymentResult payOrder(Long orderId, PaymentProvider provider) {
-        PayOrderCommand command = new PayOrderCommand(orderId, provider, gateways, orders);
+        PayOrderCommand command = new PayOrderCommand(orderId, provider, gateways, orders, payments);
         invoker.executeCommand(command);
         return command.result();
     }
 
-    /** Fulfil an order: {@code READY -> FULFILLED} and bump the customer's fulfilled count. */
+    /**
+     * Fulfil an order: {@code READY -> FULFILLED} and bump the customer's fulfilled count, exactly
+     * once. Requires a PAID payment.
+     *
+     * @throws OrderStateConflictException if the order has not been paid
+     */
     public void fulfillOrder(Long orderId) {
-        invoker.executeCommand(new FulfillOrderCommand(orderId, orders, events, users));
+        invoker.executeCommand(new FulfillOrderCommand(orderId, orders, events, users, payments));
     }
 
     /** Cancel an in-progress order. */
@@ -141,13 +155,17 @@ public class CoffeeShopFacade {
     }
 
     /**
-     * Run an order through the rest of its lifecycle synchronously: prepare, pay, fulfil.
+     * Run an order through the rest of its lifecycle synchronously: prepare, pay, fulfil. Stops
+     * after a FAILED payment without fulfilling: the returned outcome carries the FAILED result and
+     * the order, still READY, so the caller can retry the payment.
      */
-    public Order processOrder(Long orderId, PaymentProvider provider) {
+    public OrderOutcome processOrder(Long orderId, PaymentProvider provider) {
         prepareOrder(orderId);
-        payOrder(orderId, provider);
-        fulfillOrder(orderId);
-        return getOrder(orderId);
+        PaymentResult payment = payOrder(orderId, provider);
+        if (payment.isPaid()) {
+            fulfillOrder(orderId);
+        }
+        return new OrderOutcome(getOrder(orderId), payment);
     }
 
     /**

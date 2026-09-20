@@ -27,15 +27,17 @@ import java.util.Objects;
  * inverse {@code @OneToOne}, since nothing needs "give me the order for this payment" in reverse;
  * {@code PaymentRepository.findByOrderId} covers the direction actually used.
  *
- * <p>Inserted exactly once, after the payment gateway responds, with {@link #status} already
- * {@code PAID} or {@code FAILED} &mdash; not written as {@code PENDING} first and updated later.
- * {@code PaymentFailedException} today never leaves a row behind at all; a future decision to
- * record failed attempts is a schema-compatible follow-up, not a blocker now. {@code PENDING}
- * remains a valid enum value for forward-compatibility.
+ * <p>The row is the order's <em>current</em> payment state, not an attempt log: it is inserted
+ * after the payment gateway responds, with {@link #status} already {@code PAID} or {@code FAILED}
+ * (never written {@code PENDING} first). A {@code FAILED} row does not block a retry: because of
+ * {@code UNIQUE(order_id)} the retry updates this same row ({@link #recordAttempt}), so only the
+ * <em>latest</em> failure is kept. A {@code PAID} row is final: a further payment for the order is
+ * rejected before the gateway is called. {@code PENDING} remains a valid enum value for
+ * forward-compatibility.
  *
  * <p>{@link #amount} must equal the paid order's {@code price().total()} &mdash; a CHECK
- * constraint can't reference another table, so Part 03 Step 3 enforces this in
- * {@code PayOrderCommand} before this entity is ever built.
+ * constraint can't reference another table, so {@code PaymentService} enforces this in code before
+ * an entity is built, and it never changes across retries.
  */
 @Entity
 @Table(name = "payments")
@@ -87,6 +89,25 @@ public class PaymentEntity {
         this.detail = detail;
         this.createdAt = Objects.requireNonNull(createdAt, "createdAt cannot be null");
         this.updatedAt = Objects.requireNonNull(updatedAt, "updatedAt cannot be null");
+    }
+
+    /**
+     * Records a retry against an order whose previous attempt FAILED, updating this row in place
+     * (the amount is fixed for the life of the order).
+     *
+     * @throws IllegalStateException if this payment is not FAILED
+     */
+    public void recordAttempt(@NotNull PaymentProvider provider,
+                              @NotNull PaymentStatus status,
+                              @Nullable String detail,
+                              @NotNull Instant at) {
+        if (this.status != PaymentStatus.FAILED) {
+            throw new IllegalStateException("Only a FAILED payment can be retried, this one is " + this.status);
+        }
+        this.provider = Objects.requireNonNull(provider, "provider cannot be null");
+        this.status = Objects.requireNonNull(status, "status cannot be null");
+        this.detail = detail;
+        this.updatedAt = Objects.requireNonNull(at, "at cannot be null");
     }
 
     public Long id() {

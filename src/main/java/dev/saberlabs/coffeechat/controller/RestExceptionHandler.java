@@ -4,6 +4,7 @@ import dev.saberlabs.coffeechat.command.UndoNotSupportedException;
 import dev.saberlabs.coffeechat.facade.CoffeeNotOnMenuException;
 import dev.saberlabs.coffeechat.facade.CustomerNotFoundException;
 import dev.saberlabs.coffeechat.facade.OrderNotFoundException;
+import dev.saberlabs.coffeechat.facade.OrderStateConflictException;
 import dev.saberlabs.coffeechat.facade.ShopClosedException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
@@ -19,7 +20,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 public class RestExceptionHandler {
 
-    @ExceptionHandler({ShopClosedException.class, CoffeeNotOnMenuException.class})
+    @ExceptionHandler({ShopClosedException.class, CoffeeNotOnMenuException.class, OrderStateConflictException.class})
     public ProblemDetail onConflict(RuntimeException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
     }

@@ -1,6 +1,17 @@
 package dev.saberlabs.coffeechat.support;
 
 import dev.saberlabs.coffeechat.SharedPostgresContainer;
+import dev.saberlabs.coffeechat.adapter.PaymentGatewayResolver;
+import dev.saberlabs.coffeechat.command.OrderInvoker;
+import dev.saberlabs.coffeechat.facade.CoffeeShopFacade;
+import dev.saberlabs.coffeechat.factory.CoffeeFactory;
+import dev.saberlabs.coffeechat.observer.OrderEventPublisher;
+import dev.saberlabs.coffeechat.prototype.OrderPrototype;
+import dev.saberlabs.coffeechat.service.CustomerService;
+import dev.saberlabs.coffeechat.service.OrderService;
+import dev.saberlabs.coffeechat.service.PaymentService;
+import dev.saberlabs.coffeechat.strategy.PricingStrategyResolver;
+import dev.saberlabs.coffeechat.template.CoffeePreparationResolver;
 import dev.saberlabs.coffeechat.entity.UserEntity;
 import dev.saberlabs.coffeechat.model.Role;
 import dev.saberlabs.coffeechat.multithread.BaristaSupervisor;
@@ -18,6 +29,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
@@ -52,8 +64,29 @@ public abstract class AbstractIntegrationTest extends SharedPostgresContainer {
     @Autowired protected OrderNotificationListener notifications;
     @Autowired protected CoffeeShop coffeeShop;
     @Autowired protected JdbcTemplate jdbc;
+    @Autowired private ApplicationContext context;
     @Autowired private BaristaSupervisor supervisor;
     @Autowired @Qualifier("baristaTaskExecutor") private ThreadPoolTaskExecutor baristaExecutor;
+
+    /**
+     * A real facade wired from the context's real beans, except for the payment gateways: for tests
+     * that need a payment to decline or need to count how often the gateway is really called.
+     */
+    protected CoffeeShopFacade facadeWith(PaymentGatewayResolver gateways) {
+        return new CoffeeShopFacade(
+                context.getBean(CoffeeShop.class),
+                context.getBean(CoffeeFactory.class),
+                context.getBean(PricingStrategyResolver.class),
+                context.getBean(CoffeePreparationResolver.class),
+                gateways,
+                context.getBean(OrderService.class),
+                context.getBean(PaymentService.class),
+                context.getBean(CustomerService.class),
+                users,
+                context.getBean(OrderEventPublisher.class),
+                context.getBean(OrderInvoker.class),
+                context.getBeanProvider(OrderPrototype.class));
+    }
 
     /** Override to {@code true} for a test that exercises the real barista pipeline. */
     protected boolean baristasLive() {
