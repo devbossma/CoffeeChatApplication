@@ -68,6 +68,32 @@ class ChatSessionRepositoryTest extends AbstractRepositoryTest {
         }
 
         @Test
+        @DisplayName("rejects a second ACTIVE session for the same barista (uq_chat_sessions_active_barista)")
+        void rejectsSecondActiveSessionForSameBarista() {
+            UserEntity barista = userRepository.saveAndFlush(new UserEntity("Bob", Role.BARISTA));
+            UserEntity carl = userRepository.saveAndFlush(new UserEntity("Carl", Role.CUSTOMER));
+            sessionRepository.saveAndFlush(new ChatSessionEntity(customer, barista, SessionStatus.ACTIVE, Instant.now()));
+
+            DataIntegrityViolationException thrown = assertThrows(DataIntegrityViolationException.class,
+                    () -> sessionRepository.saveAndFlush(new ChatSessionEntity(carl, barista, SessionStatus.ACTIVE, Instant.now())));
+            assertTrue(thrown.getMostSpecificCause().getMessage().contains("uq_chat_sessions_active_barista"));
+        }
+
+        @Test
+        @DisplayName("allows a barista a new ACTIVE session once the previous one is INACTIVE")
+        void allowsBaristaAgainAfterInactive() {
+            UserEntity barista = userRepository.saveAndFlush(new UserEntity("Bob", Role.BARISTA));
+            UserEntity carl = userRepository.saveAndFlush(new UserEntity("Carl", Role.CUSTOMER));
+            ChatSessionEntity first = sessionRepository.saveAndFlush(new ChatSessionEntity(customer, barista, SessionStatus.ACTIVE, Instant.now()));
+            first.status(SessionStatus.INACTIVE);
+            sessionRepository.saveAndFlush(first);
+
+            ChatSessionEntity second = sessionRepository.saveAndFlush(new ChatSessionEntity(carl, barista, SessionStatus.ACTIVE, Instant.now()));
+
+            assertEquals(SessionStatus.ACTIVE, second.status());
+        }
+
+        @Test
         @DisplayName("allows a second session once the first is INACTIVE")
         void allowsSecondSessionOnceFirstInactive() {
             ChatSessionEntity first = sessionRepository.saveAndFlush(

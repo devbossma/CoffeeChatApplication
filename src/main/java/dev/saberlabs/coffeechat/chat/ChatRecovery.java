@@ -32,22 +32,35 @@ public class ChatRecovery {
         this.matchmaker = Objects.requireNonNull(matchmaker, "matchmaker cannot be null");
     }
 
-    /** @return the number of sessions restored (active + waiting) */
+    /**
+     * Void on purpose: Spring publishes a listener's non-void return value as a new event. One bad row is
+     * logged and skipped so it can never abort startup.
+     */
     @EventListener(ApplicationReadyEvent.class)
-    public int recover() {
+    public void recover() {
         List<SessionView> active = store.findByStatus(SessionStatus.ACTIVE);
+        int restored = 0;
         for (SessionView s : active) {
-            if (s.baristaId() != null) {
-                queue.restoreActiveAssignment(s.id(), s.baristaId());
+            try {
+                if (s.baristaId() != null) {
+                    queue.restoreActiveAssignment(s.id(), s.baristaId());
+                    restored++;
+                }
+            } catch (RuntimeException e) {
+                log.error("Could not restore active chat session {}", s.id(), e);
             }
         }
         List<SessionView> waiting = store.findByStatus(SessionStatus.WAITING);
         for (SessionView s : waiting) {
-            queue.customerWaiting(s.id()).ifPresent(matchmaker::settle);
+            try {
+                matchmaker.settleAll(queue.customerWaiting(s.id()));
+                restored++;
+            } catch (RuntimeException e) {
+                log.error("Could not restore waiting chat session {}", s.id(), e);
+            }
         }
-        if (!active.isEmpty() || !waiting.isEmpty()) {
-            log.info("Recovered chat state: {} active, {} waiting session(s)", active.size(), waiting.size());
+        if (restored > 0) {
+            log.info("Recovered chat state: {} session(s) ({} active, {} waiting on record)", restored, active.size(), waiting.size());
         }
-        return active.size() + waiting.size();
     }
 }

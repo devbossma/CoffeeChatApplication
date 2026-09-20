@@ -6,8 +6,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayDeque;
+import java.util.Collection;
+import java.util.Deque;
 import java.util.Objects;
-import java.util.Optional;
 
 /**
  * The matching protocol: {@link BaristaQueue} decides (in memory, under its lock), {@link ChatSessionStore}
@@ -18,9 +20,18 @@ import java.util.Optional;
  * <p>Every path that changes {@code chat_sessions.status} is here (via the store): opening (WAITING),
  * matching (ACTIVE) and ending (INACTIVE).
  *
- * <p>Known residual: if the database write of a match fails with an unexpected error, the pair is put back
- * at the front of their lines and the error is rethrown; they are matched the next time either side
- * registers or a customer arrives, not by a retry timer.
+ * <p><b>Failures of the durable step, and what happens to the pair:</b>
+ * <ul>
+ *   <li><em>The session is no longer WAITING</em> (it ended in between): the match is dropped, the barista
+ *       goes back to the front of the ready line and is paired with the next waiting customer, all in one
+ *       queue operation.</li>
+ *   <li><em>The barista can never serve</em> ({@link ChatBaristaUnavailableException}): permanent, so the
+ *       barista is dropped from the queue and the customer keeps their place at the front.</li>
+ *   <li><em>Anything else</em> (a transient database error): the pair goes back to the front of their lines,
+ *       the error is logged and NOT rethrown (the caller's own request already succeeded: the session exists
+ *       or the barista is registered), and the pair is retried by the next operation, which starts with
+ *       {@link BaristaQueue#pairPending()}; no timer is needed and nobody can overtake them.</li>
+ * </ul>
  */
 @Service
 public class ChatMatchmaker {
@@ -35,21 +46,22 @@ public class ChatMatchmaker {
         this.store = Objects.requireNonNull(store, "store cannot be null");
     }
 
-    /** Opens a session for the customer and matches it at once if a barista is ready. Returns its current state. */
+    /**
+     * Opens a session for the customer and matches it at once if a barista is ready. Returns its current
+     * state. Never fails because a match could not be written: the WAITING session is returned and the
+     * pairing is retried by the next operation.
+     */
     public SessionView open(long customerId) {
+        heal();
         SessionView created = store.createWaiting(customerId);
-        try {
-            queue.customerWaiting(created.id()).ifPresent(this::settle);
-        } catch (RuntimeException e) {
-            log.error("Session {} was created but could not be matched right now", created.id(), e);
-            throw e;
-        }
+        settleAll(queue.customerWaiting(created.id()));
         return store.find(created.id()).orElse(created);
     }
 
     /** A barista becomes available; matched at once with the longest-waiting customer, if any. */
     public void baristaReady(long baristaId) {
-        queue.baristaReady(baristaId).ifPresent(this::settle);
+        heal();
+        settleAll(queue.baristaReady(baristaId));
     }
 
     public void baristaOffline(long baristaId) {
@@ -64,41 +76,46 @@ public class ChatMatchmaker {
      * @return true if this call ended the session
      */
     public boolean end(long sessionId) {
+        heal();
         boolean ended = store.end(sessionId);
-        queue.sessionEnded(sessionId).ifPresent(this::settle);
+        settleAll(queue.sessionEnded(sessionId));
         return ended;
     }
 
-    /**
-     * Makes a tentative match durable. If the session is no longer WAITING (it ended in the instant between
-     * the queue's decision and the write) the barista goes back to the front of the ready line and is
-     * offered to the next waiting customer. If the write fails, the match is undone and the error rethrown.
-     */
-    void settle(@NotNull Match first) {
-        Match match = first;
-        while (match != null) {
-            boolean activated;
-            try {
-                activated = store.activate(match.sessionId(), match.baristaId());
-            } catch (RuntimeException e) {
-                queue.matchFailed(match, true);
-                throw e;
-            }
-            if (activated) {
-                return;
-            }
-            queue.matchFailed(match, false);
-            match = rematch(match.baristaId());
-        }
+    /** Retries any pair a transient failure left side by side. */
+    void heal() {
+        settleAll(queue.pairPending());
     }
 
-    /** After a dead match: offer the (READY again) barista to the next waiting customer, unless they went offline. */
-    private Match rematch(long baristaId) {
-        if (!queue.isReady(baristaId)) {
-            return null;
+    void settleAll(@NotNull Collection<Match> matches) {
+        Objects.requireNonNull(matches, "matches cannot be null");
+        Deque<Match> work = new ArrayDeque<>(matches);
+        drain(work);
+    }
+
+    /** Makes one tentative match durable (and whatever its failure handling pairs next). */
+    void settle(@NotNull Match match) {
+        Objects.requireNonNull(match, "match cannot be null");
+        Deque<Match> work = new ArrayDeque<>();
+        work.add(match);
+        drain(work);
+    }
+
+    private void drain(Deque<Match> work) {
+        while (!work.isEmpty()) {
+            Match match = work.poll();
+            try {
+                if (!store.activate(match.sessionId(), match.baristaId())) {
+                    work.addAll(queue.matchFailed(match, false));
+                }
+            } catch (ChatBaristaUnavailableException e) {
+                log.warn("Dropping barista {} from the chat queue: {}", match.baristaId(), e.getMessage());
+                work.addAll(queue.baristaRejected(match));
+            } catch (RuntimeException e) {
+                log.error("Could not make match {} durable; it will be retried by the next chat operation", match, e);
+                queue.matchFailed(match, true);
+                return;
+            }
         }
-        queue.baristaOffline(baristaId);
-        Optional<Match> next = queue.baristaReady(baristaId);
-        return next.orElse(null);
     }
 }

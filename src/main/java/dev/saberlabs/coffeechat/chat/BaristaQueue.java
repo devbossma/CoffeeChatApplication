@@ -3,34 +3,42 @@ package dev.saberlabs.coffeechat.chat;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * The live matching state for chat: which customers are waiting and which baristas are free, FIFO on
- * both sides. Ported from the reference {@code BaristaQueue}, with three deliberate differences:
+ * both sides. Ported from the reference {@code BaristaQueue}, with deliberate differences:
  *
  * <ul>
- *   <li><b>It only DECIDES.</b> It holds session and barista <em>ids</em>, returns a {@link Match}, and
- *       performs no I/O inside its lock. Making the decision durable (the conditional database update)
- *       is {@code ChatSessionStore}'s job, done outside the lock; if that fails,
- *       {@link #matchFailed} undoes the decision. It is coordination state that can always be rebuilt
- *       from the database, so it is correctly in memory (PRD 9.3).</li>
- *   <li><b>A barista is in exactly one state</b> (READY, BUSY, or absent). The reference {@code offer()}ed a
- *       barista into the ready deque on every registration, so one registered twice could be matched to
- *       two customers at once. Here registering while READY or BUSY is an idempotent no-op.</li>
- *   <li><b>Offline while BUSY is remembered</b>: the reference put a barista who had asked to go offline
- *       back into READY when their session ended; here they stay out.</li>
+ *   <li><b>It only DECIDES.</b> It holds session and barista <em>ids</em>, returns {@link Match}es, and
+ *       performs no I/O inside its lock. Making a decision durable (the conditional database update) is
+ *       {@code ChatSessionStore}'s job, done outside the lock; if that fails, {@link #matchFailed} or
+ *       {@link #baristaRejected} undoes it. It is coordination state that can always be rebuilt from the
+ *       database, so it is correctly in memory (PRD 9.3).</li>
+ *   <li><b>Self-healing pairing.</b> Every operation ends by pairing the FRONT waiting session with the
+ *       FRONT ready barista, repeatedly, so the oldest customer always meets the longest-ready barista,
+ *       whatever order things arrived or failed in. The one exception is {@code matchFailed(match, true)},
+ *       which puts a transiently failed pair back side by side WITHOUT re-pairing them at once (that would
+ *       spin on a persistent failure); the very next operation, or {@link #pairPending()}, pairs them again,
+ *       and they are still first in line, so a newcomer never jumps ahead of them.</li>
+ *   <li><b>A barista is in exactly one state</b> (READY, BUSY, or absent). Registering while READY or BUSY
+ *       never queues them twice.</li>
+ *   <li><b>Offline while BUSY is remembered</b>, and forgotten again if the barista registers as ready
+ *       while still busy (they changed their mind).</li>
  * </ul>
  *
  * <p>One fair lock guards every structure, since a match touches both sides atomically. A returned
  * {@link Match} is <em>tentative</em>: both parties are already recorded as BUSY/ACTIVE so nothing else
- * can claim them, until the caller either keeps it or calls {@link #matchFailed}.
+ * can claim them, until the caller either keeps it or reports it failed.
  */
 @Component
 public class BaristaQueue {
@@ -51,46 +59,40 @@ public class BaristaQueue {
     private final Set<Long> offlineWhenFree = new HashSet<>();
 
     /**
-     * A barista becomes available. Matched at once with the longest-waiting customer, if any.
-     * Idempotent: a barista who is already READY or BUSY is left as they are.
+     * A barista becomes available. Idempotent: one who is already READY is left as they are; one who is
+     * BUSY stays BUSY but any earlier "go offline when free" request is cancelled.
+     *
+     * @return the pairings this made, oldest customer first (usually none or one)
      */
-    public Optional<Match> baristaReady(long baristaId) {
+    public List<Match> baristaReady(long baristaId) {
         lock.lock();
         try {
-            if (readyIds.contains(baristaId) || sessionByBarista.containsKey(baristaId)) {
-                return Optional.empty();
+            if (sessionByBarista.containsKey(baristaId)) {
+                offlineWhenFree.remove(baristaId);
+                return List.of();
             }
-            Long sessionId = waitingSessions.poll();
-            if (sessionId != null) {
-                waitingIds.remove(sessionId);
-                return Optional.of(assign(sessionId, baristaId));
+            if (readyIds.add(baristaId)) {
+                readyBaristas.offer(baristaId);
             }
-            readyBaristas.offer(baristaId);
-            readyIds.add(baristaId);
-            return Optional.empty();
+            return pair();
         } finally {
             lock.unlock();
         }
     }
 
     /**
-     * A customer session starts waiting. Matched at once with the longest-ready barista, if any.
-     * Idempotent: a session that is already waiting or already matched is left as it is.
+     * A customer session starts waiting. Idempotent: a session that is already waiting or matched is left
+     * as it is.
+     *
+     * @return the pairings this made (usually none or one)
      */
-    public Optional<Match> customerWaiting(long sessionId) {
+    public List<Match> customerWaiting(long sessionId) {
         lock.lock();
         try {
-            if (waitingIds.contains(sessionId) || baristaBySession.containsKey(sessionId)) {
-                return Optional.empty();
+            if (!baristaBySession.containsKey(sessionId) && waitingIds.add(sessionId)) {
+                waitingSessions.offer(sessionId);
             }
-            Long baristaId = readyBaristas.poll();
-            if (baristaId != null) {
-                readyIds.remove(baristaId);
-                return Optional.of(assign(sessionId, baristaId));
-            }
-            waitingSessions.offer(sessionId);
-            waitingIds.add(sessionId);
-            return Optional.empty();
+            return pair();
         } finally {
             lock.unlock();
         }
@@ -98,26 +100,25 @@ public class BaristaQueue {
 
     /**
      * A session ended. If it was still WAITING it is removed from the waiting line, so no barista can
-     * ever be matched to a dead session. If it was matched, the barista is freed and immediately
-     * rematched with the next waiting customer, unless they asked to go offline meanwhile. Unknown
-     * sessions and a second call for the same session are no-ops.
+     * ever be matched to a dead session. If it was matched, the barista is freed and rematched with the
+     * next waiting customer, unless they asked to go offline meanwhile. Unknown sessions and a second call
+     * for the same session are no-ops (apart from pairing anything pending).
      */
-    public Optional<Match> sessionEnded(long sessionId) {
+    public List<Match> sessionEnded(long sessionId) {
         lock.lock();
         try {
             if (waitingIds.remove(sessionId)) {
                 waitingSessions.remove(sessionId);
-                return Optional.empty();
+            } else {
+                Long baristaId = baristaBySession.remove(sessionId);
+                if (baristaId != null) {
+                    sessionByBarista.remove(baristaId);
+                    if (!offlineWhenFree.remove(baristaId) && readyIds.add(baristaId)) {
+                        readyBaristas.offer(baristaId);
+                    }
+                }
             }
-            Long baristaId = baristaBySession.remove(sessionId);
-            if (baristaId == null) {
-                return Optional.empty();
-            }
-            sessionByBarista.remove(baristaId);
-            if (offlineWhenFree.remove(baristaId)) {
-                return Optional.empty();
-            }
-            return baristaReady(baristaId);
+            return pair();
         } finally {
             lock.unlock();
         }
@@ -141,29 +142,71 @@ public class BaristaQueue {
     }
 
     /**
-     * Undoes a {@link Match} whose database write did not happen (it failed, or the session had ended
-     * in the meantime). The barista goes back to the FRONT of the ready line, keeping FIFO fairness
-     * (unless they asked to go offline meanwhile). The session goes back to the FRONT of the waiting
-     * line if {@code sessionStillWaiting} (the failure was transient); otherwise it is dropped.
-     * A no-op if the match is no longer the current assignment (for example the session already ended).
+     * Pairs whatever is pending: the front waiting session with the front ready barista, repeatedly. Called
+     * before new work is accepted, so a pair left side by side by a transient failure is retried without a
+     * timer.
      */
-    public void matchFailed(Match match, boolean sessionStillWaiting) {
+    public List<Match> pairPending() {
         lock.lock();
         try {
-            Long current = baristaBySession.get(match.sessionId());
-            if (current == null || current != match.baristaId()) {
-                return;
+            return pair();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Undoes a {@link Match} whose database write did not happen. The barista goes back to the FRONT of the
+     * ready line (unless they asked to go offline meanwhile). If {@code sessionStillWaiting} the failure was
+     * transient: the session goes back to the FRONT of the waiting line and the pair is left side by side,
+     * for the next operation to pair again, oldest first. Otherwise the session is dropped (it ended) and the
+     * barista is paired at once with the next waiting customer.
+     *
+     * <p>A no-op, returning nothing, if the match is no longer the current assignment.
+     *
+     * @return the pairings this made (only when the session was dropped)
+     */
+    public List<Match> matchFailed(Match match, boolean sessionStillWaiting) {
+        Objects.requireNonNull(match, "match cannot be null");
+        lock.lock();
+        try {
+            if (!release(match)) {
+                return List.of();
             }
-            baristaBySession.remove(match.sessionId());
-            sessionByBarista.remove(match.baristaId());
-            if (!offlineWhenFree.remove(match.baristaId())) {
+            if (!offlineWhenFree.remove(match.baristaId()) && readyIds.add(match.baristaId())) {
                 readyBaristas.addFirst(match.baristaId());
-                readyIds.add(match.baristaId());
             }
-            if (sessionStillWaiting && !waitingIds.contains(match.sessionId())) {
+            if (sessionStillWaiting) {
+                if (waitingIds.add(match.sessionId())) {
+                    waitingSessions.addFirst(match.sessionId());
+                }
+                return List.of();
+            }
+            return pair();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Undoes a {@link Match} because the BARISTA can never serve it (no such user, not a barista): the
+     * barista is dropped from the queue entirely, so they are not offered again, and the session goes back
+     * to the FRONT of the waiting line and is paired at once with the next ready barista.
+     *
+     * @return the pairings this made
+     */
+    public List<Match> baristaRejected(Match match) {
+        Objects.requireNonNull(match, "match cannot be null");
+        lock.lock();
+        try {
+            if (!release(match)) {
+                return List.of();
+            }
+            offlineWhenFree.remove(match.baristaId());
+            if (waitingIds.add(match.sessionId())) {
                 waitingSessions.addFirst(match.sessionId());
-                waitingIds.add(match.sessionId());
             }
+            return pair();
         } finally {
             lock.unlock();
         }
@@ -268,9 +311,29 @@ public class BaristaQueue {
         }
     }
 
-    private Match assign(long sessionId, long baristaId) {
-        baristaBySession.put(sessionId, baristaId);
-        sessionByBarista.put(baristaId, sessionId);
-        return new Match(sessionId, baristaId);
+    /** Caller holds the lock. Frees the assignment if {@code match} is still current. */
+    private boolean release(Match match) {
+        Long current = baristaBySession.get(match.sessionId());
+        if (current == null || current != match.baristaId()) {
+            return false;
+        }
+        baristaBySession.remove(match.sessionId());
+        sessionByBarista.remove(match.baristaId());
+        return true;
+    }
+
+    /** Caller holds the lock. Front waiting with front ready, until one side is empty. */
+    private List<Match> pair() {
+        List<Match> made = new ArrayList<>();
+        while (!waitingSessions.isEmpty() && !readyBaristas.isEmpty()) {
+            long sessionId = waitingSessions.poll();
+            long baristaId = readyBaristas.poll();
+            waitingIds.remove(sessionId);
+            readyIds.remove(baristaId);
+            baristaBySession.put(sessionId, baristaId);
+            sessionByBarista.put(baristaId, sessionId);
+            made.add(new Match(sessionId, baristaId));
+        }
+        return made;
     }
 }

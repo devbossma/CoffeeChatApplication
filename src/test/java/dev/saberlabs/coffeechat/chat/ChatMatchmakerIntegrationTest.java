@@ -21,7 +21,6 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -341,7 +340,7 @@ class ChatMatchmakerIntegrationTest extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("ending a session racing its own match never leaves an ACTIVE session or a busy barista behind")
+        @DisplayName("(stress, repeated) ending a session racing its own match never leaves an ACTIVE session or a busy barista behind")
         void endRacingMatch() throws Exception {
             for (int round = 0; round < 5; round++) {
                 baristaQueue.clear();
@@ -405,17 +404,55 @@ class ChatMatchmakerIntegrationTest extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("a failed write (unknown barista id) undoes the match: session waits again, no rows change")
-        void failedWriteCompensates() {
+        @DisplayName("a barista id that does not exist is dropped for good: the session keeps waiting, nothing throws, no rows change")
+        void unknownBaristaDropped() {
             UserEntity alice = customer("Alice");
             SessionView waiting = matchmaker.open(alice.id());
 
-            RuntimeException e = assertThrows(RuntimeException.class, () -> matchmaker.baristaReady(999_999L));
+            matchmaker.baristaReady(999_999L);
 
-            assertInstanceOf(IllegalStateException.class, e);
             assertTrue(baristaQueue.isWaiting(waiting.id()));
+            assertFalse(baristaQueue.isReady(999_999L));
+            assertFalse(baristaQueue.isBusy(999_999L));
             assertEquals(SessionStatus.WAITING, store.find(waiting.id()).orElseThrow().status());
             assertEquals(0, count("SELECT count(*) FROM chat_messages"));
+        }
+
+        @Test
+        @DisplayName("a user who is not a BARISTA is dropped too, and the next real barista gets the customer")
+        void nonBaristaDropped() {
+            UserEntity alice = customer("Alice");
+            UserEntity impostor = customer("Impostor");
+            UserEntity bob = barista("Bob");
+            SessionView waiting = matchmaker.open(alice.id());
+
+            matchmaker.baristaReady(impostor.id());
+            assertFalse(baristaQueue.isReady(impostor.id()));
+            matchmaker.baristaReady(bob.id());
+
+            SessionView matched = store.find(waiting.id()).orElseThrow();
+            assertEquals(SessionStatus.ACTIVE, matched.status());
+            assertEquals(bob.id(), matched.baristaId());
+        }
+
+        @Test
+        @DisplayName("a barista who is already ACTIVE in the database (queue out of step) is refused by the unique index and dropped")
+        void baristaAlreadyActiveInDatabase() {
+            UserEntity alice = customer("Alice");
+            UserEntity carl = customer("Carl");
+            UserEntity bob = barista("Bob");
+            matchmaker.baristaReady(bob.id());
+            matchmaker.open(alice.id());
+            SessionView second = matchmaker.open(carl.id());
+            // The queue forgets Bob's session (as after a bug or a partial restart) and he registers again.
+            baristaQueue.clear();
+            baristaQueue.customerWaiting(second.id());
+
+            matchmaker.baristaReady(bob.id());
+
+            assertEquals(SessionStatus.WAITING, store.find(second.id()).orElseThrow().status());
+            assertFalse(baristaQueue.isReady(bob.id()));
+            assertEquals(1, count("SELECT count(*) FROM chat_sessions WHERE status = 'ACTIVE'"));
         }
     }
 
@@ -476,8 +513,8 @@ class ChatMatchmakerIntegrationTest extends AbstractIntegrationTest {
             SessionView w2 = matchmaker.open(dee.id());
             baristaQueue.clear();
 
-            assertEquals(3, recovery.recover());
-            assertEquals(3, recovery.recover());
+            recovery.recover();
+            recovery.recover();
 
             assertTrue(baristaQueue.isBusy(bob.id()));
             assertEquals(2, baristaQueue.waitingCount());
@@ -494,7 +531,9 @@ class ChatMatchmakerIntegrationTest extends AbstractIntegrationTest {
         @Test
         @DisplayName("nothing to recover is a zero")
         void nothing() {
-            assertEquals(0, recovery.recover());
+            recovery.recover();
+            assertEquals(0, baristaQueue.waitingCount());
+            assertEquals(0, baristaQueue.busyCount());
         }
     }
 }

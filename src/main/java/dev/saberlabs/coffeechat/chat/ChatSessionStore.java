@@ -6,6 +6,7 @@ import dev.saberlabs.coffeechat.entity.OrderEntity;
 import dev.saberlabs.coffeechat.entity.UserEntity;
 import dev.saberlabs.coffeechat.facade.CustomerNotFoundException;
 import dev.saberlabs.coffeechat.model.MessageType;
+import dev.saberlabs.coffeechat.model.Role;
 import dev.saberlabs.coffeechat.model.SessionStatus;
 import dev.saberlabs.coffeechat.repository.ChatMessageRepository;
 import dev.saberlabs.coffeechat.repository.ChatSessionRepository;
@@ -38,6 +39,7 @@ import java.util.Optional;
 public class ChatSessionStore {
 
     static final String ACTIVE_CUSTOMER_CONSTRAINT = "uq_chat_sessions_active_customer";
+    static final String ACTIVE_BARISTA_CONSTRAINT = "uq_chat_sessions_active_barista";
     static final String SYSTEM_SENDER = "System";
 
     private final ChatSessionRepository sessions;
@@ -93,18 +95,31 @@ public class ChatSessionStore {
      * publishes {@link ChatMatchedEvent}, all in one transaction.
      *
      * @return false, changing nothing, if the session is no longer WAITING (it ended, or was matched)
+     * @throws ChatBaristaUnavailableException if the barista cannot serve (no such user, not a BARISTA, or
+     *                                         already ACTIVE elsewhere: {@code uq_chat_sessions_active_barista})
      */
     public boolean activate(long sessionId, long baristaId) {
-        return Boolean.TRUE.equals(tx.execute(status -> {
-            UserEntity barista = users.findById(baristaId).orElseThrow(() -> new IllegalStateException("No barista " + baristaId));
-            if (sessions.activateIfWaiting(sessionId, barista) == 0) {
-                return false;
+        try {
+            return Boolean.TRUE.equals(tx.execute(status -> {
+                UserEntity barista = users.findById(baristaId)
+                        .orElseThrow(() -> new ChatBaristaUnavailableException(baristaId, "no such user"));
+                if (barista.role() != Role.BARISTA) {
+                    throw new ChatBaristaUnavailableException(baristaId, "user is a " + barista.role());
+                }
+                if (sessions.activateIfWaiting(sessionId, barista) == 0) {
+                    return false;
+                }
+                ChatSessionEntity session = sessions.findById(sessionId).orElseThrow();
+                insert(session, MessageType.SYSTEM_MESSAGE, null, SYSTEM_SENDER, barista.name() + " joined the chat", null);
+                events.publishEvent(new ChatMatchedEvent(sessionId, session.customer().id(), baristaId));
+                return true;
+            }));
+        } catch (DataIntegrityViolationException e) {
+            if (mentions(e, ACTIVE_BARISTA_CONSTRAINT)) {
+                throw new ChatBaristaUnavailableException(baristaId, "already has an active session");
             }
-            ChatSessionEntity session = sessions.findById(sessionId).orElseThrow();
-            insert(session, MessageType.SYSTEM_MESSAGE, null, SYSTEM_SENDER, barista.name() + " joined the chat", null);
-            events.publishEvent(new ChatMatchedEvent(sessionId, session.customer().id(), baristaId));
-            return true;
-        }));
+            throw e;
+        }
     }
 
     /**

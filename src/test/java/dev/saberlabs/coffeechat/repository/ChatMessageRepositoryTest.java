@@ -175,9 +175,13 @@ class ChatMessageRepositoryTest extends AbstractRepositoryTest {
         @Test
         @DisplayName("returns only that session's messages")
         void onlyThatSession() {
+            UserEntity carl = userRepository.saveAndFlush(new UserEntity("Carl", Role.CUSTOMER));
+            ChatSessionEntity other = sessionRepository.saveAndFlush(new ChatSessionEntity(carl, null, SessionStatus.WAITING, Instant.now()));
             messageRepository.saveAndFlush(new ChatMessageEntity(session, MessageType.CHAT_MESSAGE, customer, "Alice", "mine", Instant.now(), null));
+            messageRepository.saveAndFlush(new ChatMessageEntity(other, MessageType.CHAT_MESSAGE, carl, "Carl", "theirs", Instant.now(), null));
 
-            assertTrue(messageRepository.findBySessionIdOrderBySentAtAscIdAsc(session.id() + 1000).isEmpty());
+            assertEquals(List.of("mine"), messageRepository.findBySessionIdOrderBySentAtAscIdAsc(session.id()).stream().map(ChatMessageEntity::content).toList());
+            assertEquals(List.of("theirs"), messageRepository.findBySessionIdOrderBySentAtAscIdAsc(other.id()).stream().map(ChatMessageEntity::content).toList());
         }
     }
 }

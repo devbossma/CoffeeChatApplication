@@ -94,6 +94,15 @@ class OrderCommandParserTest {
         }
 
         @Test
+        @DisplayName("a leading or trailing non-breaking / Unicode space does not hide the marker")
+        void leadingUnicodeSpace() {
+            for (String space : List.of("\u00A0", "\u2007", "\u202F", "\u2003", "\u3000")) {
+                Parsed result = parsed(space + "/order" + space + "latte" + space);
+                assertEquals(CoffeeType.LATTE, result.coffee());
+            }
+        }
+
+        @Test
         @DisplayName("any run of spaces, tabs, newlines or non-breaking spaces separates tokens")
         void anyWhitespace() {
             Parsed result = parsed("/order\t\tlatte \n  milk sugar");

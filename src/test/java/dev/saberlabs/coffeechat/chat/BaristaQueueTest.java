@@ -42,9 +42,9 @@ class BaristaQueueTest {
             assertTrue(queue.baristaReady(1).isEmpty());
             assertTrue(queue.isReady(1));
 
-            Optional<Match> match = queue.customerWaiting(100);
+            List<Match> match = queue.customerWaiting(100);
 
-            assertEquals(Optional.of(new Match(100, 1)), match);
+            assertEquals(List.of(new Match(100, 1)), match);
             assertTrue(queue.isBusy(1));
             assertFalse(queue.isReady(1));
             assertEquals(Optional.of(1L), queue.baristaOf(100));
@@ -56,7 +56,7 @@ class BaristaQueueTest {
             assertTrue(queue.customerWaiting(100).isEmpty());
             assertTrue(queue.isWaiting(100));
 
-            assertEquals(Optional.of(new Match(100, 1)), queue.baristaReady(1));
+            assertEquals(List.of(new Match(100, 1)), queue.baristaReady(1));
             assertFalse(queue.isWaiting(100));
         }
 
@@ -66,8 +66,8 @@ class BaristaQueueTest {
             queue.customerWaiting(100);
             queue.customerWaiting(101);
 
-            assertEquals(Optional.of(new Match(100, 1)), queue.baristaReady(1));
-            assertEquals(Optional.of(new Match(101, 2)), queue.baristaReady(2));
+            assertEquals(List.of(new Match(100, 1)), queue.baristaReady(1));
+            assertEquals(List.of(new Match(101, 2)), queue.baristaReady(2));
         }
 
         @Test
@@ -76,8 +76,8 @@ class BaristaQueueTest {
             queue.baristaReady(1);
             queue.baristaReady(2);
 
-            assertEquals(Optional.of(new Match(100, 1)), queue.customerWaiting(100));
-            assertEquals(Optional.of(new Match(101, 2)), queue.customerWaiting(101));
+            assertEquals(List.of(new Match(100, 1)), queue.customerWaiting(100));
+            assertEquals(List.of(new Match(101, 2)), queue.customerWaiting(101));
         }
 
         @Test
@@ -144,7 +144,7 @@ class BaristaQueueTest {
             queue.customerWaiting(100);
             queue.customerWaiting(101);
 
-            assertEquals(Optional.of(new Match(101, 1)), queue.sessionEnded(100));
+            assertEquals(List.of(new Match(101, 1)), queue.sessionEnded(100));
             assertEquals(Optional.of(1L), queue.baristaOf(101));
             assertTrue(queue.baristaOf(100).isEmpty());
         }
@@ -201,8 +201,8 @@ class BaristaQueueTest {
 
             queue.sessionEnded(101);
 
-            assertEquals(Optional.of(new Match(100, 1)), queue.baristaReady(1));
-            assertEquals(Optional.of(new Match(102, 2)), queue.baristaReady(2));
+            assertEquals(List.of(new Match(100, 1)), queue.baristaReady(1));
+            assertEquals(List.of(new Match(102, 2)), queue.baristaReady(2));
         }
     }
 
@@ -257,6 +257,19 @@ class BaristaQueueTest {
         }
 
         @Test
+        @DisplayName("registering as ready while BUSY cancels an earlier offline request (they changed their mind)")
+        void readyWhileBusyCancelsOffline() {
+            queue.baristaReady(1);
+            queue.customerWaiting(100);
+            queue.baristaOffline(1);
+
+            assertTrue(queue.baristaReady(1).isEmpty());
+            queue.sessionEnded(100);
+
+            assertTrue(queue.isReady(1));
+        }
+
+        @Test
         @DisplayName("an unknown barista is a no-op, and they can register normally afterwards")
         void unknown() {
             queue.baristaOffline(7);
@@ -273,32 +286,115 @@ class BaristaQueueTest {
         @DisplayName("puts the barista at the FRONT of the ready line, ahead of one who registered earlier")
         void baristaToFront() {
             queue.baristaReady(1);
-            Match match = queue.customerWaiting(100).orElseThrow();
+            Match match = queue.customerWaiting(100).get(0);
             queue.baristaReady(2);
 
             queue.matchFailed(match, false);
 
-            assertEquals(Optional.of(new Match(101, 1)), queue.customerWaiting(101));
+            assertEquals(List.of(new Match(101, 1)), queue.customerWaiting(101));
         }
 
         @Test
         @DisplayName("puts a still-waiting session back at the FRONT of the waiting line")
         void sessionStillWaiting() {
             queue.baristaReady(1);
-            Match match = queue.customerWaiting(100).orElseThrow();
+            Match match = queue.customerWaiting(100).get(0);
             queue.customerWaiting(101);
 
             queue.matchFailed(match, true);
 
             assertTrue(queue.isWaiting(100));
-            assertEquals(Optional.of(new Match(100, 2)), queue.baristaReady(2));
+            assertEquals(List.of(new Match(100, 1), new Match(101, 2)), queue.baristaReady(2));
+        }
+
+        @Test
+        @DisplayName("after a transient failure the older pair stays first: a newcomer does not jump the queue")
+        void failedPairKeepsPlace() {
+            queue.baristaReady(1);
+            Match failed = queue.customerWaiting(100).get(0);
+            queue.matchFailed(failed, true);
+
+            assertEquals(List.of(new Match(100, 1)), queue.customerWaiting(101));
+            assertTrue(queue.isWaiting(101));
+        }
+
+        @Test
+        @DisplayName("pairPending() retries a pair a transient failure left side by side")
+        void pairPendingRetries() {
+            queue.baristaReady(1);
+            queue.matchFailed(queue.customerWaiting(100).get(0), true);
+            assertTrue(queue.isReady(1));
+            assertTrue(queue.isWaiting(100));
+
+            assertEquals(List.of(new Match(100, 1)), queue.pairPending());
+            assertTrue(queue.pairPending().isEmpty());
+        }
+
+        @Test
+        @DisplayName("rejects a null match with a clear message")
+        void nullMatch() {
+            assertEquals("match cannot be null",
+                    org.junit.jupiter.api.Assertions.assertThrows(NullPointerException.class, () -> queue.matchFailed(null, true)).getMessage());
+            assertEquals("match cannot be null",
+                    org.junit.jupiter.api.Assertions.assertThrows(NullPointerException.class, () -> queue.baristaRejected(null)).getMessage());
+        }
+    }
+
+    @Nested
+    @DisplayName("baristaRejected()")
+    class BaristaRejectedTests {
+
+        @Test
+        @DisplayName("drops the barista for good and pairs the customer, at the front, with the next ready barista")
+        void dropsBarista() {
+            queue.baristaReady(1);
+            queue.baristaReady(2);
+            Match match = queue.customerWaiting(100).get(0);
+
+            assertEquals(List.of(new Match(100, 2)), queue.baristaRejected(match));
+
+            assertFalse(queue.isReady(1));
+            assertFalse(queue.isBusy(1));
+        }
+
+        @Test
+        @DisplayName("with no other barista ready the customer waits at the front")
+        void customerWaitsAtFront() {
+            queue.baristaReady(1);
+            Match match = queue.customerWaiting(100).get(0);
+            queue.customerWaiting(101);
+
+            assertTrue(queue.baristaRejected(match).isEmpty());
+
+            assertFalse(queue.isReady(1));
+            assertEquals(List.of(new Match(100, 2)), queue.baristaReady(2));
+        }
+
+        @Test
+        @DisplayName("a stale match changes nothing")
+        void stale() {
+            queue.baristaReady(1);
+            Match match = queue.customerWaiting(100).get(0);
+            queue.sessionEnded(100);
+
+            assertTrue(queue.baristaRejected(match).isEmpty());
+            assertTrue(queue.isReady(1));
+        }
+
+        @Test
+        @DisplayName("a barista whose match was dropped can register again later")
+        void canReregister() {
+            queue.baristaReady(1);
+            queue.baristaRejected(queue.customerWaiting(100).get(0));
+
+            assertEquals(List.of(new Match(100, 1)), queue.baristaReady(1));
         }
 
         @Test
         @DisplayName("drops a session that is no longer waiting")
         void sessionGone() {
             queue.baristaReady(1);
-            Match match = queue.customerWaiting(100).orElseThrow();
+            Match match = queue.customerWaiting(100).get(0);
 
             queue.matchFailed(match, false);
 
@@ -311,7 +407,7 @@ class BaristaQueueTest {
         @DisplayName("a stale match (session already ended) changes nothing")
         void staleMatch() {
             queue.baristaReady(1);
-            Match match = queue.customerWaiting(100).orElseThrow();
+            Match match = queue.customerWaiting(100).get(0);
             queue.sessionEnded(100);
             queue.customerWaiting(101);
 
@@ -325,7 +421,7 @@ class BaristaQueueTest {
         @DisplayName("a barista who asked to go offline meanwhile is not returned to READY")
         void offlineMeanwhile() {
             queue.baristaReady(1);
-            Match match = queue.customerWaiting(100).orElseThrow();
+            Match match = queue.customerWaiting(100).get(0);
             queue.baristaOffline(1);
 
             queue.matchFailed(match, true);
@@ -424,14 +520,14 @@ class BaristaQueueTest {
         @Test
         @DisplayName("customers and baristas arriving together yield no duplicate or missing matches")
         void noDuplicateMatches() throws Exception {
-            List<java.util.concurrent.Callable<Optional<Match>>> jobs = new ArrayList<>();
+            List<java.util.concurrent.Callable<List<Match>>> jobs = new ArrayList<>();
             for (int i = 0; i < PARTIES; i++) {
                 long id = i;
                 jobs.add(() -> queue.baristaReady(1000 + id));
                 jobs.add(() -> queue.customerWaiting(id));
             }
 
-            List<Match> matches = runAll(jobs).stream().flatMap(Optional::stream).toList();
+            List<Match> matches = runAll(jobs).stream().flatMap(List::stream).toList();
 
             assertEquals(PARTIES, matches.size());
             assertEquals(PARTIES, matches.stream().map(Match::sessionId).distinct().count());
@@ -447,12 +543,12 @@ class BaristaQueueTest {
             queue.customerWaiting(100);
             queue.customerWaiting(101);
 
-            List<java.util.concurrent.Callable<Optional<Match>>> jobs = new ArrayList<>();
+            List<java.util.concurrent.Callable<List<Match>>> jobs = new ArrayList<>();
             for (int i = 0; i < 32; i++) {
                 jobs.add(() -> queue.sessionEnded(100));
             }
 
-            List<Match> matches = runAll(jobs).stream().flatMap(Optional::stream).toList();
+            List<Match> matches = runAll(jobs).stream().flatMap(List::stream).toList();
 
             assertEquals(List.of(new Match(101, 1)), matches);
             assertEquals(1, queue.busyCount());
@@ -465,12 +561,12 @@ class BaristaQueueTest {
             for (int i = 0; i < 50; i++) {
                 queue.customerWaiting(i);
             }
-            List<java.util.concurrent.Callable<Optional<Match>>> jobs = new ArrayList<>();
+            List<java.util.concurrent.Callable<List<Match>>> jobs = new ArrayList<>();
             for (int i = 0; i < 50; i++) {
                 jobs.add(() -> queue.baristaReady(1));
             }
 
-            List<Match> matches = runAll(jobs).stream().flatMap(Optional::stream).toList();
+            List<Match> matches = runAll(jobs).stream().flatMap(List::stream).toList();
 
             assertEquals(1, matches.size());
             assertEquals(49, queue.waitingCount());

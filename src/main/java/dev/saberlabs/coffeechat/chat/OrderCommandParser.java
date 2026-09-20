@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.regex.Pattern;
 
 /**
  * Turns a chat message into an order request, or says why it is not one. Pure parsing: no Spring
@@ -21,7 +20,7 @@ import java.util.regex.Pattern;
  * whitespace-delimited token is exactly {@code /order} (case-insensitive). So the PRD's false-positive
  * sentence "order latte from this place was amazing" (no slash) is small talk, and so are
  * {@code /orders} and {@code /ordering}. Any run of whitespace (spaces, tabs, newlines, non-breaking
- * spaces) separates tokens and the input is trimmed first. Coffee and extras are case-insensitive;
+ * spaces, and the other Unicode spaces of {@link TextRules}) separates tokens and the input is trimmed first. Coffee and extras are case-insensitive;
  * duplicate extras are allowed and kept in the order typed (two milks cost twice one); the extras
  * aliases carried over from the reference are {@code whipped}, {@code whippedcream} and
  * {@code whipped_cream} for whipped cream.
@@ -35,7 +34,6 @@ public final class OrderCommandParser {
     /** The token that turns a message into an order command. */
     public static final String MARKER = "/order";
 
-    private static final Pattern WHITESPACE = Pattern.compile("[\\s\\p{Z}]+");
 
     private static final Map<String, ExtraType> EXTRAS = Map.of(
             "milk", ExtraType.MILK,
@@ -91,11 +89,11 @@ public final class OrderCommandParser {
      */
     public Result parse(@NotNull String input) {
         Objects.requireNonNull(input, "input cannot be null");
-        String trimmed = input.strip();
+        String trimmed = TextRules.strip(input);
         if (trimmed.isEmpty()) {
             return new NotAnOrder();
         }
-        String[] tokens = WHITESPACE.split(trimmed);
+        String[] tokens = TextRules.tokens(trimmed);
         if (!tokens[0].equalsIgnoreCase(MARKER)) {
             return new NotAnOrder();
         }
