@@ -143,7 +143,7 @@ class OrderInvokerTest {
             invoker.executeCommand(a);
             invoker.executeCommand(b);
 
-            OrderCommand undone = invoker.undoLast();
+            OrderCommand undone = invoker.undoLast(null);
 
             assertEquals(b, undone);
             assertEquals(1, b.undone.get());
@@ -153,14 +153,14 @@ class OrderInvokerTest {
         @Test
         @DisplayName("returns null when there is nothing to undo")
         void nullWhenNothing() {
-            assertNull(invoker.undoLast());
+            assertNull(invoker.undoLast(null));
         }
 
         @Test
         @DisplayName("undo runs in its own committed transaction")
         void undoInTransaction() {
             invoker.executeCommand(new CountingCommand("A"));
-            invoker.undoLast();
+            invoker.undoLast(null);
             assertEquals(2, transactions.committed.get());
         }
 
@@ -176,10 +176,10 @@ class OrderInvokerTest {
             invoker.executeCommand(earlier);
             invoker.executeCommand(stale);
 
-            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast());
+            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast(null));
 
             assertEquals(1, invoker.pendingUndoCount(), "the stale command is gone");
-            assertEquals(earlier, invoker.undoLast(), "the earlier command is reachable again");
+            assertEquals(earlier, invoker.undoLast(null), "the earlier command is reachable again");
         }
 
         @Test
@@ -192,7 +192,7 @@ class OrderInvokerTest {
             };
             invoker.executeCommand(flaky);
 
-            assertThrows(IllegalStateException.class, () -> invoker.undoLast());
+            assertThrows(IllegalStateException.class, () -> invoker.undoLast(null));
 
             assertEquals(1, invoker.pendingUndoCount());
         }
@@ -209,7 +209,7 @@ class OrderInvokerTest {
             invoker.executeCommand(pay);
 
             assertEquals(0, invoker.pendingUndoCount());
-            assertNull(invoker.undoLast(), "defined behaviour: nothing to undo, no exception");
+            assertNull(invoker.undoLast(null), "defined behaviour: nothing to undo, no exception");
             assertEquals(List.of("Place", "Cancel", "Pay"), invoker.history(), "history still records everything");
         }
 
@@ -223,9 +223,9 @@ class OrderInvokerTest {
             CountingCommand later = new CountingCommand("PlaceAgain");
             invoker.executeCommand(later);
 
-            assertEquals(later, invoker.undoLast());
+            assertEquals(later, invoker.undoLast(null));
             assertEquals(1, later.undone.get());
-            assertNull(invoker.undoLast(), "the pre-barrier command is not reachable");
+            assertNull(invoker.undoLast(null), "the pre-barrier command is not reachable");
         }
 
         @Test
@@ -241,7 +241,7 @@ class OrderInvokerTest {
         @DisplayName("undo does not erase the history entry")
         void keepsHistory() {
             invoker.executeCommand(new CountingCommand("A"));
-            invoker.undoLast();
+            invoker.undoLast(null);
             assertEquals(List.of("A"), invoker.history());
         }
     }

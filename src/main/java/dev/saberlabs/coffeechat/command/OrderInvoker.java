@@ -70,19 +70,14 @@ public class OrderInvoker {
     }
 
     /**
-     * Undoes the most recently executed undoable command, if any, in its own transaction.
+     * Undoes the most recently executed undoable command, if any, in its own transaction, recording the
+     * status changes the undo makes as done by {@code attributeTo} (a BARISTA's user id, or {@code null}
+     * for the system). There is deliberately no actor-less overload: the only caller is the facade, which
+     * has already authorised the actor.
      *
      * @return the command that was undone, or {@code null} if there was nothing to undo (including
      *         when the last thing done was a barrier command such as a payment)
      * @throws UndoNotSupportedException if the order has moved on since (the command is then dropped)
-     */
-    public OrderCommand undoLast() {
-        return undoLast(null);
-    }
-
-    /**
-     * As {@link #undoLast()}, recording the status changes the undo makes as done by
-     * {@code attributeTo} (a BARISTA's user id, or {@code null}).
      */
     public OrderCommand undoLast(Long attributeTo) {
         OrderCommand command;

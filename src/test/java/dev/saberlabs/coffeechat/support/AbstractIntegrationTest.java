@@ -47,11 +47,11 @@ import static org.awaitility.Awaitility.await;
  * {@code @Transactional}: the behaviours under test (commit-then-enqueue, optimistic-lock races,
  * two threads on one row) only exist across real transaction boundaries.
  *
- * <p>The shared context has live barista consumer loops that would race a test which seeds a
- * {@code PLACED} order and expects to observe it. So by default the baristas are stopped (and
- * awaited idle) before each test and unconditionally restored after it, in {@link #restoreBaristas}
- * &mdash; a failing test can never leave the shared context with stopped baristas for the next class.
- * A test that wants the real pipeline overrides {@link #baristasLive()}.
+ * <p>The shared context starts with live barista consumer loops that would race a test which seeds
+ * a {@code PLACED} order and expects to observe it. So the baristas are kept <em>stopped between
+ * tests</em>: the first test stops them (a no-op afterwards, since stopping an already-stopped
+ * supervisor costs nothing), and only a test that overrides {@link #baristasLive()} starts them, for
+ * itself, and they are stopped again in a {@code finally} after it.
  */
 @SpringBootTest
 public abstract class AbstractIntegrationTest extends SharedPostgresContainer {
@@ -91,13 +91,17 @@ public abstract class AbstractIntegrationTest extends SharedPostgresContainer {
                 context.getBeanProvider(OrderPrototype.class));
     }
 
-    /** Override to {@code true} for a test that exercises the real barista pipeline. */
+    /**
+     * Override to {@code true} for a test that exercises the real barista pipeline: the baristas are
+     * started for it and stopped again afterwards. Everything else runs with the baristas stopped.
+     */
     protected boolean baristasLive() {
         return false;
     }
 
     @BeforeEach
     void resetSharedState() throws InterruptedException {
+        stopBaristasAndAwaitIdle();
         cleanSharedState();
         if (baristasLive()) {
             supervisor.start();
@@ -107,20 +111,22 @@ public abstract class AbstractIntegrationTest extends SharedPostgresContainer {
     /**
      * Cleans up AFTER the test as well as before it: these tests commit real rows into the one
      * Postgres that every other test class (including the {@code @DataJpaTest} repository tests)
-     * shares, so anything left behind would break an unrelated class. The baristas are restored last,
-     * in every case, so a failing test never leaves the shared context with stopped baristas.
+     * shares, so anything left behind would break an unrelated class. The baristas are stopped in a
+     * {@code finally}, so a failing live-barista test can never leave the shared context with
+     * running baristas that act on the next test's rows.
      */
     @AfterEach
-    void cleanupAndRestoreBaristas() throws InterruptedException {
+    void cleanupAndStopBaristas() throws InterruptedException {
         try {
+            stopBaristasAndAwaitIdle();
             cleanSharedState();
         } finally {
-            supervisor.start();
+            supervisor.stop();
         }
     }
 
+    /** Assumes the baristas are stopped and idle. */
     private void cleanSharedState() throws InterruptedException {
-        stopBaristasAndAwaitIdle();
         chatMessages.deleteAllInBatch();
         chatSessions.deleteAllInBatch();
         history.deleteAllInBatch();
@@ -134,9 +140,15 @@ public abstract class AbstractIntegrationTest extends SharedPostgresContainer {
         coffeeShop.reset();
     }
 
+    /**
+     * Stops the supervisor and waits for the loops to go idle, but only if there is something to
+     * stop: between tests the baristas are already stopped, so this is then free.
+     */
     protected void stopBaristasAndAwaitIdle() {
-        supervisor.stop();
-        await().atMost(Duration.ofSeconds(5)).until(() -> baristaExecutor.getActiveCount() == 0);
+        if (supervisor.isRunning() || baristaExecutor.getActiveCount() > 0) {
+            supervisor.stop();
+            await().atMost(Duration.ofSeconds(5)).until(() -> baristaExecutor.getActiveCount() == 0);
+        }
     }
 
     /** A CUSTOMER with {@code fulfilledOrders} already recorded (set directly: fixtures, not behaviour). */

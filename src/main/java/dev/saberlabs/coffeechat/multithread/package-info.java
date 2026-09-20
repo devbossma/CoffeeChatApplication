@@ -8,7 +8,7 @@
  * {@code OrderStatusChangedEvent} published when an order reaches {@code PLACED} — a second,
  * independent listener alongside the observer package's notification listener, not the same one
  * doing both jobs. {@code Barista} is the consumer: an {@code @Async} loop that waits on
- * a timed {@code OrderQueue.poll(...)} and, for each order, calls {@code CoffeeShopFacade.prepareOrder(id)} —
+ * a timed {@code OrderQueue.poll(...)} and, for each order, calls {@code CoffeeShopFacade.prepareOrder(id, Actor.SYSTEM)} —
  * never a direct status update ({@code CLAUDE.md}). {@code BaristaSupervisor} starts N such loops
  * (N = {@code CoffeeShop.baristaPoolSize()}) as a {@code SmartLifecycle}
  * auto-start (so a resumed, previously paused context restarts them too).

@@ -107,7 +107,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
             PlaceOrderCommand command = place(customer.id());
             invoker.executeCommand(command);
 
-            invoker.undoLast();
+            invoker.undoLast(null);
 
             assertEquals(OrderStatus.CANCELLED, statusOf(command.orderId()));
         }
@@ -119,7 +119,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
             invoker.executeCommand(command);
             jdbc.update("UPDATE orders SET status = 'READY' WHERE id = ?", command.orderId());
 
-            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast());
+            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast(null));
 
             assertEquals(OrderStatus.READY, statusOf(command.orderId()));
         }
@@ -226,7 +226,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
             invoker.executeCommand(prepare(id));
 
             assertThrows(UndoNotSupportedException.class, prepare(id)::undo);
-            assertNull(invoker.undoLast(), "preparation is a barrier, so there is nothing to undo");
+            assertNull(invoker.undoLast(null), "preparation is a barrier, so there is nothing to undo");
 
             assertEquals(OrderStatus.READY, statusOf(id));
         }
@@ -381,7 +381,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
             invoker.executeCommand(command);
 
             assertThrows(UndoNotSupportedException.class, command::undo);
-            assertNull(invoker.undoLast(), "payment is a barrier, so there is nothing to undo");
+            assertNull(invoker.undoLast(null), "payment is a barrier, so there is nothing to undo");
 
             assertTrue(command.result().isPaid(), "the payment result is untouched");
             assertEquals(1, payments.count());
@@ -490,7 +490,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
             invoker.executeCommand(command);
 
             assertThrows(UndoNotSupportedException.class, command::undo);
-            assertNull(invoker.undoLast(), "fulfilment is a barrier, so there is nothing to undo");
+            assertNull(invoker.undoLast(null), "fulfilment is a barrier, so there is nothing to undo");
 
             assertEquals(OrderStatus.FULFILLED, statusOf(id));
             assertEquals(1, fulfilledOrdersOf(customer.id()));
@@ -541,7 +541,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
             Long id = orderAt(OrderStatus.PLACED);
             invoker.executeCommand(new CancelOrderCommand(id, orderService, events, Actor.SYSTEM, staffAccess));
 
-            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast());
+            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast(null));
 
             assertEquals(OrderStatus.CANCELLED, statusOf(id));
         }
@@ -552,7 +552,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
             Long id = orderAt(OrderStatus.READY);
             invoker.executeCommand(new CancelOrderCommand(id, orderService, events, Actor.SYSTEM, staffAccess));
 
-            invoker.undoLast();
+            invoker.undoLast(null);
 
             assertEquals(OrderStatus.READY, statusOf(id));
         }
