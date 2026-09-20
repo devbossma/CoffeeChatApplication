@@ -63,7 +63,7 @@ class OrderConcurrencyTest extends AbstractIntegrationTest {
 
     private Long readyOrderId(CoffeeShopFacade facade, UserEntity customer) {
         Order placed = facade.placeOrder(new PlaceOrderRequest(customer.id(), CoffeeType.ESPRESSO, List.of()));
-        facade.prepareOrder(placed.id());
+        facade.prepareOrder(placed.id(), Actor.SYSTEM);
         return placed.id();
     }
 
@@ -94,7 +94,7 @@ class OrderConcurrencyTest extends AbstractIntegrationTest {
             }));
             Long id = readyOrderId(facade, customer("Alice"));
 
-            List<Object> outcomes = raceTogether(2, () -> facade.payOrder(id, PaymentProvider.CASH));
+            List<Object> outcomes = raceTogether(2, () -> facade.payOrder(id, PaymentProvider.CASH, Actor.SYSTEM));
 
             assertTrue(overlapObserved.get(), "a second payer was blocked on the lock while the first was charging");
             assertEquals(1, failures(outcomes), "exactly one payer is rejected");
@@ -115,10 +115,10 @@ class OrderConcurrencyTest extends AbstractIntegrationTest {
             CoffeeShopFacade facade = facadeWith(TestGateways.countingCash(new AtomicInteger()));
             UserEntity customer = customer("Alice");
             Long id = readyOrderId(facade, customer);
-            facade.payOrder(id, PaymentProvider.CASH);
+            facade.payOrder(id, PaymentProvider.CASH, Actor.SYSTEM);
 
             List<Object> outcomes = raceTogether(2, () -> {
-                facade.fulfillOrder(id);
+                facade.fulfillOrder(id, Actor.SYSTEM);
                 return "fulfilled";
             });
 
@@ -147,9 +147,9 @@ class OrderConcurrencyTest extends AbstractIntegrationTest {
 
             List<Object> outcomes = raceTogether(2, () -> {
                 if (which.getAndIncrement() == 0) {
-                    facade.cancelOrder(placed.id());
+                    facade.cancelOrder(placed.id(), Actor.SYSTEM);
                 } else {
-                    facade.prepareOrder(placed.id());
+                    facade.prepareOrder(placed.id(), Actor.SYSTEM);
                 }
                 return "done";
             });

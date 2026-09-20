@@ -191,7 +191,7 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
             UserEntity customer = customer("Alice");
             Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
 
-            facade.prepareOrder(placed.id());
+            facade.prepareOrder(placed.id(), Actor.SYSTEM);
 
             assertEquals(OrderStatus.READY, facade.getOrder(placed.id()).status());
         }
@@ -199,7 +199,7 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
         @Test
         @DisplayName("throws for an unknown order id")
         void throwsForUnknown() {
-            assertThrows(OrderNotFoundException.class, () -> facade.prepareOrder(404L));
+            assertThrows(OrderNotFoundException.class, () -> facade.prepareOrder(404L, Actor.SYSTEM));
         }
     }
 
@@ -213,7 +213,7 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
             UserEntity customer = customer("Alice");
             Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
 
-            OrderOutcome outcome = facade.processOrder(placed.id(), PaymentProvider.CASH);
+            OrderOutcome outcome = facade.processOrder(placed.id(), PaymentProvider.CASH, Actor.SYSTEM);
 
             assertEquals(OrderStatus.FULFILLED, outcome.order().status());
             assertTrue(outcome.payment().isPaid());
@@ -235,7 +235,7 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
             UserEntity customer = customer("Alice");
             Order placed = declining.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
 
-            OrderOutcome outcome = declining.processOrder(placed.id(), PaymentProvider.PAYPAL);
+            OrderOutcome outcome = declining.processOrder(placed.id(), PaymentProvider.PAYPAL, Actor.SYSTEM);
 
             assertTrue(!outcome.payment().isPaid());
             assertTrue(!outcome.fulfilled());
@@ -243,8 +243,8 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
             assertEquals(0, fulfilledOrdersOf(customer.id()));
             assertEquals(1, payments.count());
 
-            assertTrue(declining.payOrder(placed.id(), PaymentProvider.CASH).isPaid());
-            declining.fulfillOrder(placed.id());
+            assertTrue(declining.payOrder(placed.id(), PaymentProvider.CASH, Actor.SYSTEM).isPaid());
+            declining.fulfillOrder(placed.id(), Actor.SYSTEM);
 
             assertEquals(OrderStatus.FULFILLED, declining.getOrder(placed.id()).status());
             assertEquals(1, fulfilledOrdersOf(customer.id()));
@@ -261,9 +261,9 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
         void unpaidFulfilRejected() {
             UserEntity customer = customer("Alice");
             Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
-            facade.prepareOrder(placed.id());
+            facade.prepareOrder(placed.id(), Actor.SYSTEM);
 
-            assertThrows(OrderStateConflictException.class, () -> facade.fulfillOrder(placed.id()));
+            assertThrows(OrderStateConflictException.class, () -> facade.fulfillOrder(placed.id(), Actor.SYSTEM));
 
             assertEquals(OrderStatus.READY, facade.getOrder(placed.id()).status());
             assertEquals(0, fulfilledOrdersOf(customer.id()));
@@ -274,10 +274,10 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
         void doublePayRejected() {
             UserEntity customer = customer("Alice");
             Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
-            facade.prepareOrder(placed.id());
-            facade.payOrder(placed.id(), PaymentProvider.CASH);
+            facade.prepareOrder(placed.id(), Actor.SYSTEM);
+            facade.payOrder(placed.id(), PaymentProvider.CASH, Actor.SYSTEM);
 
-            assertThrows(OrderStateConflictException.class, () -> facade.payOrder(placed.id(), PaymentProvider.CASH));
+            assertThrows(OrderStateConflictException.class, () -> facade.payOrder(placed.id(), PaymentProvider.CASH, Actor.SYSTEM));
             assertEquals(1, payments.count());
         }
 
@@ -287,7 +287,7 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
             UserEntity customer = customer("Alice");
             Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
 
-            assertThrows(OrderStateConflictException.class, () -> facade.payOrder(placed.id(), PaymentProvider.CASH));
+            assertThrows(OrderStateConflictException.class, () -> facade.payOrder(placed.id(), PaymentProvider.CASH, Actor.SYSTEM));
         }
     }
 
@@ -300,7 +300,7 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
         void cancels() {
             UserEntity customer = customer("Alice");
             Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
-            facade.cancelOrder(placed.id());
+            facade.cancelOrder(placed.id(), Actor.SYSTEM);
             assertEquals(OrderStatus.CANCELLED, facade.getOrder(placed.id()).status());
         }
     }
@@ -315,7 +315,7 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
             UserEntity customer = customer("Alice");
             Order original = facade.placeOrder(
                     request(customer.id(), CoffeeType.LATTE, ExtraType.MILK, ExtraType.SUGAR, ExtraType.MILK));
-            facade.processOrder(original.id(), PaymentProvider.CASH);
+            facade.processOrder(original.id(), PaymentProvider.CASH, Actor.SYSTEM);
 
             Order clone = facade.reorder(original.id());
 
@@ -377,16 +377,16 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
         void undoAfterPaymentIsDefinedAndDoesNotJam() {
             UserEntity customer = customer("Alice");
             Order first = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
-            facade.prepareOrder(first.id());
-            facade.payOrder(first.id(), PaymentProvider.CASH);
+            facade.prepareOrder(first.id(), Actor.SYSTEM);
+            facade.payOrder(first.id(), PaymentProvider.CASH, Actor.SYSTEM);
 
-            facade.undoLastAction();
+            facade.undoLastAction(Actor.SYSTEM);
 
             assertEquals(OrderStatus.READY, facade.getOrder(first.id()).status());
             assertEquals(1, payments.count());
 
             Order second = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
-            facade.undoLastAction();
+            facade.undoLastAction(Actor.SYSTEM);
             assertEquals(OrderStatus.CANCELLED, facade.getOrder(second.id()).status());
             assertEquals(OrderStatus.READY, facade.getOrder(first.id()).status());
         }
@@ -397,7 +397,7 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
         void undoPlacement() {
             UserEntity customer = customer("Alice");
             Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
-            facade.undoLastAction();
+            facade.undoLastAction(Actor.SYSTEM);
             assertEquals(OrderStatus.CANCELLED, facade.getOrder(placed.id()).status());
         }
     }

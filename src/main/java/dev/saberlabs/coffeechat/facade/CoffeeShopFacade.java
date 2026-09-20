@@ -22,6 +22,7 @@ import dev.saberlabs.coffeechat.repository.UserRepository;
 import dev.saberlabs.coffeechat.service.CustomerService;
 import dev.saberlabs.coffeechat.service.OrderService;
 import dev.saberlabs.coffeechat.service.PaymentService;
+import dev.saberlabs.coffeechat.service.StaffAccess;
 import dev.saberlabs.coffeechat.singleton.CoffeeShop;
 import dev.saberlabs.coffeechat.strategy.PricingStrategy;
 import dev.saberlabs.coffeechat.strategy.PricingStrategyResolver;
@@ -50,6 +51,7 @@ public class CoffeeShopFacade {
     private final PaymentGatewayResolver gateways;
     private final OrderService orders;
     private final PaymentService payments;
+    private final StaffAccess staffAccess;
     private final CustomerService customers;
     private final UserRepository users;
     private final OrderEventPublisher events;
@@ -63,6 +65,7 @@ public class CoffeeShopFacade {
                             PaymentGatewayResolver gateways,
                             OrderService orders,
                             PaymentService payments,
+                            StaffAccess staffAccess,
                             CustomerService customers,
                             UserRepository users,
                             OrderEventPublisher events,
@@ -75,6 +78,7 @@ public class CoffeeShopFacade {
         this.gateways = gateways;
         this.orders = orders;
         this.payments = payments;
+        this.staffAccess = staffAccess;
         this.customers = customers;
         this.users = users;
         this.events = events;
@@ -126,48 +130,68 @@ public class CoffeeShopFacade {
         return orders.findById(orderId).orElseThrow(() -> new OrderNotFoundException(orderId));
     }
 
-    /** Prepare an order: Template Method recipe, then {@code PLACED -> READY}. */
-    public void prepareOrder(Long orderId) {
-        invoker.executeCommand(new PrepareOrderCommand(orderId, orders, events, preparations));
+    /**
+     * Prepare an order: Template Method recipe, then {@code PLACED -> READY}. A status transition:
+     * {@code actor} must be a BARISTA or MANAGER (or {@link Actor#SYSTEM}, the async barista loops).
+     *
+     * @throws UnknownActorException   if the actor's user id does not exist (401)
+     * @throws RoleNotAllowedException if the actor is not staff (403)
+     */
+    public void prepareOrder(Long orderId, Actor actor) {
+        invoker.executeCommand(new PrepareOrderCommand(orderId, orders, events, preparations, actor, staffAccess));
     }
 
     /**
-     * Collect payment for an order through {@code provider}'s Adapter. A gateway decline is returned
-     * as a FAILED {@link PaymentResult} (and recorded), not thrown; a FAILED order can be paid again.
+     * Collect payment for an order through {@code provider}'s Adapter. Allowed for staff (collecting at
+     * the counter), the order's own CUSTOMER, or {@link Actor#SYSTEM}; a different customer paying
+     * someone else's order is rejected before the gateway is called. A gateway decline is returned as a
+     * FAILED {@link PaymentResult} (and recorded), not thrown; a FAILED order can be paid again.
      *
+     * @throws UnknownActorException       if the actor's user id does not exist (401)
+     * @throws RoleNotAllowedException     if the actor may not pay this order (403)
      * @throws OrderStateConflictException if the order is not READY or is already PAID
      */
-    public PaymentResult payOrder(Long orderId, PaymentProvider provider) {
-        PayOrderCommand command = new PayOrderCommand(orderId, provider, gateways, orders, payments);
+    public PaymentResult payOrder(Long orderId, PaymentProvider provider, Actor actor) {
+        PayOrderCommand command = new PayOrderCommand(orderId, provider, gateways, orders, payments, actor, staffAccess);
         invoker.executeCommand(command);
         return command.result();
     }
 
     /**
      * Fulfil an order: {@code READY -> FULFILLED} and bump the customer's fulfilled count, exactly
-     * once. Requires a PAID payment.
+     * once. Requires a PAID payment and a staff actor (BARISTA, MANAGER) or {@link Actor#SYSTEM}.
      *
+     * @throws UnknownActorException       if the actor's user id does not exist (401)
+     * @throws RoleNotAllowedException     if the actor is not staff (403)
      * @throws OrderStateConflictException if the order has not been paid
      */
-    public void fulfillOrder(Long orderId) {
-        invoker.executeCommand(new FulfillOrderCommand(orderId, orders, events, users, payments));
-    }
-
-    /** Cancel an in-progress order. */
-    public void cancelOrder(Long orderId) {
-        invoker.executeCommand(new CancelOrderCommand(orderId, orders, events));
+    public void fulfillOrder(Long orderId, Actor actor) {
+        invoker.executeCommand(new FulfillOrderCommand(orderId, orders, events, users, payments, actor, staffAccess));
     }
 
     /**
-     * Run an order through the rest of its lifecycle synchronously: prepare, pay, fulfil. Stops
-     * after a FAILED payment without fulfilling: the returned outcome carries the FAILED result and
-     * the order, still READY, so the caller can retry the payment.
+     * Cancel an in-progress order. A status transition: staff (BARISTA, MANAGER) or
+     * {@link Actor#SYSTEM} only. Known limitation: customers cannot cancel their own order through the
+     * API yet.
+     *
+     * @throws UnknownActorException   if the actor's user id does not exist (401)
+     * @throws RoleNotAllowedException if the actor is not staff (403)
      */
-    public OrderOutcome processOrder(Long orderId, PaymentProvider provider) {
-        prepareOrder(orderId);
-        PaymentResult payment = payOrder(orderId, provider);
+    public void cancelOrder(Long orderId, Actor actor) {
+        invoker.executeCommand(new CancelOrderCommand(orderId, orders, events, actor, staffAccess));
+    }
+
+    /**
+     * Run an order through the rest of its lifecycle synchronously: prepare, pay, fulfil, all as
+     * {@code actor} (so it needs staff or {@link Actor#SYSTEM}). Stops after a FAILED payment without
+     * fulfilling: the returned outcome carries the FAILED result and the order, still READY, so the
+     * caller can retry the payment.
+     */
+    public OrderOutcome processOrder(Long orderId, PaymentProvider provider, Actor actor) {
+        prepareOrder(orderId, actor);
+        PaymentResult payment = payOrder(orderId, provider, actor);
         if (payment.isPaid()) {
-            fulfillOrder(orderId);
+            fulfillOrder(orderId, actor);
         }
         return new OrderOutcome(getOrder(orderId), payment);
     }
@@ -191,9 +215,14 @@ public class CoffeeShopFacade {
      * Undo the most recent lifecycle action, if any. A limited convenience, not a general reversal:
      * only a placement that is still PLACED, and a cancellation of a READY order, can be undone;
      * anything whose reversal would have effects outside the order row (payment, loyalty count,
-     * preparation) throws {@code UndoNotSupportedException}.
+     * preparation) throws {@code UndoNotSupportedException}. It is a status transition, so it needs a
+     * staff actor (or {@link Actor#SYSTEM}), and the changes it makes are attributed to that actor.
+     *
+     * @throws UnknownActorException   if the actor's user id does not exist (401)
+     * @throws RoleNotAllowedException if the actor is not staff (403)
      */
-    public void undoLastAction() {
-        invoker.undoLast();
+    public void undoLastAction(Actor actor) {
+        Long recordedActor = staffAccess.authorize(actor, StaffAccess.STAFF);
+        invoker.undoLast(recordedActor);
     }
 }

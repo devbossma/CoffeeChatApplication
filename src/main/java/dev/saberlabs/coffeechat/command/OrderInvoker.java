@@ -77,6 +77,14 @@ public class OrderInvoker {
      * @throws UndoNotSupportedException if the order has moved on since (the command is then dropped)
      */
     public OrderCommand undoLast() {
+        return undoLast(null);
+    }
+
+    /**
+     * As {@link #undoLast()}, recording the status changes the undo makes as done by
+     * {@code attributeTo} (a BARISTA's user id, or {@code null}).
+     */
+    public OrderCommand undoLast(Long attributeTo) {
         OrderCommand command;
         synchronized (this) {
             command = undoStack.peek();
@@ -84,6 +92,7 @@ public class OrderInvoker {
         if (command == null) {
             return null;
         }
+        command.attributeUndoTo(attributeTo);
         try {
             transaction.executeWithoutResult(status -> command.undo());
         } catch (UndoNotSupportedException e) {

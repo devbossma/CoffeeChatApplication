@@ -1,5 +1,6 @@
 package dev.saberlabs.coffeechat.multithread;
 
+import dev.saberlabs.coffeechat.facade.Actor;
 import dev.saberlabs.coffeechat.facade.CoffeeShopFacade;
 import dev.saberlabs.coffeechat.facade.OrderNotFoundException;
 import dev.saberlabs.coffeechat.model.OrderStatus;
@@ -83,7 +84,7 @@ class BaristaTest {
             orderQueue.enqueue(order(1L));
 
             assertTrue(prepared.await(2, TimeUnit.SECONDS));
-            verify(facade).prepareOrder(1L);
+            verify(facade).prepareOrder(1L, Actor.SYSTEM);
 
             stopAndJoin();
         }
@@ -110,11 +111,11 @@ class BaristaTest {
         @DisplayName("a failure preparing one order does not stop the loop")
         void continuesAfterFailure() throws InterruptedException {
             CountDownLatch secondPrepared = new CountDownLatch(1);
-            doThrow(new RuntimeException("boom")).when(facade).prepareOrder(1L);
+            doThrow(new RuntimeException("boom")).when(facade).prepareOrder(1L, Actor.SYSTEM);
             org.mockito.Mockito.doAnswer(inv -> {
                 secondPrepared.countDown();
                 return null;
-            }).when(facade).prepareOrder(2L);
+            }).when(facade).prepareOrder(2L, Actor.SYSTEM);
             startLoop();
 
             orderQueue.enqueue(order(1L));
@@ -136,7 +137,7 @@ class BaristaTest {
                 }
                 prepared.countDown();
                 return null;
-            }).when(facade).prepareOrder(1L);
+            }).when(facade).prepareOrder(1L, Actor.SYSTEM);
             startLoop();
 
             orderQueue.enqueue(order(1L));
@@ -151,7 +152,7 @@ class BaristaTest {
         void conflictsAreRequeuedNotDropped() throws InterruptedException {
             barista = new Barista(orderQueue, facade, 10);
             CountDownLatch secondPrepared = new CountDownLatch(1);
-            doThrow(new OptimisticLockingFailureException("stale")).when(facade).prepareOrder(1L);
+            doThrow(new OptimisticLockingFailureException("stale")).when(facade).prepareOrder(1L, Actor.SYSTEM);
             doAnswerCountDown(secondPrepared, 2L);
             startLoop();
 
@@ -161,7 +162,7 @@ class BaristaTest {
             assertTrue(secondPrepared.await(2, TimeUnit.SECONDS));
             org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).untilAsserted(() ->
                     verify(facade, org.mockito.Mockito.times(Barista.MAX_ATTEMPTS * Barista.MAX_UNEXPECTED_ATTEMPTS))
-                            .prepareOrder(1L));
+                            .prepareOrder(1L, Actor.SYSTEM));
             stopAndJoin();
         }
 
@@ -177,7 +178,7 @@ class BaristaTest {
                 }
                 prepared.countDown();
                 return null;
-            }).when(facade).prepareOrder(1L);
+            }).when(facade).prepareOrder(1L, Actor.SYSTEM);
             startLoop();
 
             orderQueue.enqueue(order(1L));
@@ -193,7 +194,7 @@ class BaristaTest {
             barista = new Barista(orderQueue, facade, 10);
             barista.closeRetryScheduler();
             CountDownLatch secondPrepared = new CountDownLatch(1);
-            doThrow(new RuntimeException("hiccup")).when(facade).prepareOrder(1L);
+            doThrow(new RuntimeException("hiccup")).when(facade).prepareOrder(1L, Actor.SYSTEM);
             doAnswerCountDown(secondPrepared, 2L);
             startLoop();
 
@@ -211,7 +212,7 @@ class BaristaTest {
             OrderQueue tiny = new OrderQueue(1);
             barista = new Barista(tiny, facade, 5);
             CountDownLatch secondPrepared = new CountDownLatch(1);
-            doThrow(new RuntimeException("hiccup")).when(facade).prepareOrder(1L);
+            doThrow(new RuntimeException("hiccup")).when(facade).prepareOrder(1L, Actor.SYSTEM);
             doAnswerCountDown(secondPrepared, 2L);
             startLoop();
 
@@ -235,7 +236,7 @@ class BaristaTest {
                 }
                 prepared.countDown();
                 return null;
-            }).when(facade).prepareOrder(1L);
+            }).when(facade).prepareOrder(1L, Actor.SYSTEM);
             startLoop();
 
             orderQueue.enqueue(order(1L));
@@ -250,7 +251,7 @@ class BaristaTest {
         void alwaysFailingIsBounded() throws InterruptedException {
             barista = new Barista(orderQueue, facade, 10);
             CountDownLatch secondPrepared = new CountDownLatch(1);
-            doThrow(new RuntimeException("always broken")).when(facade).prepareOrder(1L);
+            doThrow(new RuntimeException("always broken")).when(facade).prepareOrder(1L, Actor.SYSTEM);
             doAnswerCountDown(secondPrepared, 2L);
             startLoop();
 
@@ -259,10 +260,10 @@ class BaristaTest {
 
             assertTrue(secondPrepared.await(2, TimeUnit.SECONDS));
             org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(3)).untilAsserted(() ->
-                    verify(facade, org.mockito.Mockito.times(Barista.MAX_UNEXPECTED_ATTEMPTS)).prepareOrder(1L));
+                    verify(facade, org.mockito.Mockito.times(Barista.MAX_UNEXPECTED_ATTEMPTS)).prepareOrder(1L, Actor.SYSTEM));
             // no further retry is scheduled after giving up: still exactly MAX_UNEXPECTED_ATTEMPTS a moment later
             org.awaitility.Awaitility.await().pollDelay(java.time.Duration.ofMillis(300)).atMost(java.time.Duration.ofSeconds(2))
-                    .untilAsserted(() -> verify(facade, org.mockito.Mockito.times(Barista.MAX_UNEXPECTED_ATTEMPTS)).prepareOrder(1L));
+                    .untilAsserted(() -> verify(facade, org.mockito.Mockito.times(Barista.MAX_UNEXPECTED_ATTEMPTS)).prepareOrder(1L, Actor.SYSTEM));
             assertTrue(orderQueue.isEmpty());
             stopAndJoin();
         }
@@ -271,18 +272,18 @@ class BaristaTest {
         @DisplayName("after giving up, the same id starts again with a fresh attempt budget (a later recovery re-enqueue is not penalised)")
         void budgetResetsAfterGivingUp() throws InterruptedException {
             barista = new Barista(orderQueue, facade, 10);
-            doThrow(new RuntimeException("always broken")).when(facade).prepareOrder(1L);
+            doThrow(new RuntimeException("always broken")).when(facade).prepareOrder(1L, Actor.SYSTEM);
             startLoop();
 
             orderQueue.enqueue(order(1L));
             org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(3)).untilAsserted(() ->
-                    verify(facade, org.mockito.Mockito.times(Barista.MAX_UNEXPECTED_ATTEMPTS)).prepareOrder(1L));
+                    verify(facade, org.mockito.Mockito.times(Barista.MAX_UNEXPECTED_ATTEMPTS)).prepareOrder(1L, Actor.SYSTEM));
             org.awaitility.Awaitility.await().until(orderQueue::isEmpty);
 
             orderQueue.enqueue(order(1L));
 
             org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(3)).untilAsserted(() ->
-                    verify(facade, org.mockito.Mockito.times(2 * Barista.MAX_UNEXPECTED_ATTEMPTS)).prepareOrder(1L));
+                    verify(facade, org.mockito.Mockito.times(2 * Barista.MAX_UNEXPECTED_ATTEMPTS)).prepareOrder(1L, Actor.SYSTEM));
             stopAndJoin();
         }
 
@@ -299,7 +300,7 @@ class BaristaTest {
                 }
                 prepared.countDown();
                 return null;
-            }).when(facade).prepareOrder(1L);
+            }).when(facade).prepareOrder(1L, Actor.SYSTEM);
             startLoop();
 
             orderQueue.enqueue(order(1L));
@@ -313,7 +314,7 @@ class BaristaTest {
         @DisplayName("an order that is not found (e.g. an id that was never visible) is skipped without retrying")
         void skipsMissingOrder() throws InterruptedException {
             CountDownLatch secondPrepared = new CountDownLatch(1);
-            doThrow(new OrderNotFoundException(1L)).when(facade).prepareOrder(1L);
+            doThrow(new OrderNotFoundException(1L)).when(facade).prepareOrder(1L, Actor.SYSTEM);
             doAnswerCountDown(secondPrepared, 2L);
             startLoop();
 
@@ -321,7 +322,7 @@ class BaristaTest {
             orderQueue.enqueue(order(2L));
 
             assertTrue(secondPrepared.await(2, TimeUnit.SECONDS));
-            verify(facade, org.mockito.Mockito.times(1)).prepareOrder(1L);
+            verify(facade, org.mockito.Mockito.times(1)).prepareOrder(1L, Actor.SYSTEM);
             stopAndJoin();
         }
 
@@ -329,7 +330,7 @@ class BaristaTest {
         @DisplayName("an order that is no longer preparable (illegal transition) is skipped without retrying")
         void skipsNoLongerPreparableOrder() throws InterruptedException {
             CountDownLatch secondPrepared = new CountDownLatch(1);
-            doThrow(new dev.saberlabs.coffeechat.model.IllegalOrderTransitionException(OrderStatus.CANCELLED, OrderStatus.PREPARING)).when(facade).prepareOrder(1L);
+            doThrow(new dev.saberlabs.coffeechat.model.IllegalOrderTransitionException(OrderStatus.CANCELLED, OrderStatus.PREPARING)).when(facade).prepareOrder(1L, Actor.SYSTEM);
             doAnswerCountDown(secondPrepared, 2L);
             startLoop();
 
@@ -337,7 +338,7 @@ class BaristaTest {
             orderQueue.enqueue(order(2L));
 
             assertTrue(secondPrepared.await(2, TimeUnit.SECONDS));
-            verify(facade, org.mockito.Mockito.times(1)).prepareOrder(1L);
+            verify(facade, org.mockito.Mockito.times(1)).prepareOrder(1L, Actor.SYSTEM);
             stopAndJoin();
         }
 
@@ -368,7 +369,7 @@ class BaristaTest {
             org.mockito.Mockito.doAnswer(inv -> {
                 latch.countDown();
                 return null;
-            }).when(facade).prepareOrder(expectedId);
+            }).when(facade).prepareOrder(expectedId, Actor.SYSTEM);
         }
 
         private void doAnswerRecording(CountDownLatch latch, List<Long> seen) {
@@ -376,7 +377,7 @@ class BaristaTest {
                 seen.add(inv.getArgument(0));
                 latch.countDown();
                 return null;
-            }).when(facade).prepareOrder(org.mockito.ArgumentMatchers.anyLong());
+            }).when(facade).prepareOrder(org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.any());
         }
     }
 

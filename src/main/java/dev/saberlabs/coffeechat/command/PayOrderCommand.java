@@ -4,6 +4,8 @@ import dev.saberlabs.coffeechat.adapter.PaymentGatewayResolver;
 import dev.saberlabs.coffeechat.adapter.PaymentProvider;
 import dev.saberlabs.coffeechat.adapter.PaymentResult;
 import dev.saberlabs.coffeechat.entity.OrderEntity;
+import dev.saberlabs.coffeechat.facade.Actor;
+import dev.saberlabs.coffeechat.service.StaffAccess;
 import dev.saberlabs.coffeechat.facade.OrderStateConflictException;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 import dev.saberlabs.coffeechat.service.OrderService;
@@ -30,23 +32,32 @@ public class PayOrderCommand implements OrderCommand {
     private final PaymentGatewayResolver gateways;
     private final OrderService orders;
     private final PaymentService payments;
+    private final Actor actor;
+    private final StaffAccess access;
     private PaymentResult result;
 
     public PayOrderCommand(@NotNull Long orderId,
                            @NotNull PaymentProvider provider,
                            @NotNull PaymentGatewayResolver gateways,
                            @NotNull OrderService orders,
-                           @NotNull PaymentService payments) {
+                           @NotNull PaymentService payments,
+                           @NotNull Actor actor,
+                           @NotNull StaffAccess access) {
         this.orderId = Objects.requireNonNull(orderId, "orderId cannot be null");
         this.provider = Objects.requireNonNull(provider, "provider cannot be null");
         this.gateways = Objects.requireNonNull(gateways, "gateways cannot be null");
         this.orders = Objects.requireNonNull(orders, "orders cannot be null");
         this.payments = Objects.requireNonNull(payments, "payments cannot be null");
+        this.actor = Objects.requireNonNull(actor, "actor cannot be null");
+        this.access = Objects.requireNonNull(access, "access cannot be null");
     }
 
     @Override
     public void execute() {
         OrderEntity order = orders.requireForPayment(orderId);
+        // Who may pay: staff, this order's own customer, or the system. Checked before the status and
+        // before the gateway, inside this transaction, so a rejected payer is never charged anything.
+        access.authorizePayer(actor, order);
         if (order.status() != OrderStatus.READY) {
             throw new OrderStateConflictException(
                     "Order " + orderId + " cannot be paid while it is " + order.status() + "; only a READY order is payable");

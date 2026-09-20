@@ -1,6 +1,8 @@
 package dev.saberlabs.coffeechat.command;
 
 import dev.saberlabs.coffeechat.entity.OrderEntity;
+import dev.saberlabs.coffeechat.facade.Actor;
+import dev.saberlabs.coffeechat.service.StaffAccess;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 import dev.saberlabs.coffeechat.observer.OrderEventPublisher;
 import dev.saberlabs.coffeechat.service.OrderService;
@@ -28,13 +30,16 @@ public class PrepareOrderCommand extends AbstractOrderCommand {
     public PrepareOrderCommand(@NotNull Long orderId,
                                @NotNull OrderService orders,
                                @NotNull OrderEventPublisher events,
-                               @NotNull CoffeePreparationResolver preparations) {
-        super(orderId, orders, events);
+                               @NotNull CoffeePreparationResolver preparations,
+                               @NotNull Actor actor,
+                               @NotNull StaffAccess access) {
+        super(orderId, orders, events, actor, access);
         this.preparations = Objects.requireNonNull(preparations, "preparations cannot be null");
     }
 
     @Override
     public void execute() {
+        authorize(StaffAccess.STAFF);
         OrderEntity order = orders.require(orderId);
         CoffeePreparationTemplate preparation = preparations.forType(order.baseCoffeeType());
         preparation.prepare();

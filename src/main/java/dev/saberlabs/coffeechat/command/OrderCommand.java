@@ -41,4 +41,11 @@ public interface OrderCommand {
     default Long actorUserId() {
         return null;
     }
+
+    /**
+     * Attributes the status changes an {@link #undo()} is about to make to {@code userId} (the user
+     * who asked for the undo, {@code null} for system), instead of to whoever originally ran the command.
+     */
+    default void attributeUndoTo(Long userId) {
+    }
 }

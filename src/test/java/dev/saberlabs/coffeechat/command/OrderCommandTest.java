@@ -1,5 +1,7 @@
 package dev.saberlabs.coffeechat.command;
 
+import dev.saberlabs.coffeechat.service.StaffAccess;
+import dev.saberlabs.coffeechat.facade.Actor;
 import dev.saberlabs.coffeechat.adapter.CashPaymentAdapter;
 import dev.saberlabs.coffeechat.adapter.PayPalAdapter;
 import dev.saberlabs.coffeechat.adapter.PayPalPaymentService;
@@ -55,6 +57,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
     @Autowired CoffeePreparationResolver preparations;
     @Autowired PaymentGatewayResolver gateways;
     @Autowired PaymentService paymentService;
+    @Autowired StaffAccess staffAccess;
 
     private UserEntity customer;
 
@@ -174,7 +177,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
     class PrepareOrderCommandTests {
 
         private PrepareOrderCommand prepare(Long orderId) {
-            return new PrepareOrderCommand(orderId, orderService, events, preparations);
+            return new PrepareOrderCommand(orderId, orderService, events, preparations, Actor.SYSTEM, staffAccess);
         }
 
         @Test
@@ -238,7 +241,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
         @DisplayName("constructor rejects a null CoffeePreparationResolver")
         void rejectsNullResolver() {
             assertThrows(NullPointerException.class,
-                    () -> new PrepareOrderCommand(1L, orderService, events, null));
+                    () -> new PrepareOrderCommand(1L, orderService, events, null, Actor.SYSTEM, staffAccess));
         }
     }
 
@@ -250,7 +253,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
     }
 
     private PayOrderCommand pay(Long orderId, PaymentProvider provider, PaymentGatewayResolver resolver) {
-        return new PayOrderCommand(orderId, provider, resolver, orderService, paymentService);
+        return new PayOrderCommand(orderId, provider, resolver, orderService, paymentService, Actor.SYSTEM, staffAccess);
     }
 
     private static PaymentGatewayResolver decliningPayPal() {
@@ -395,15 +398,15 @@ class OrderCommandTest extends AbstractIntegrationTest {
         @DisplayName("constructor rejects null arguments")
         void rejectsNulls() {
             assertThrows(NullPointerException.class,
-                    () -> new PayOrderCommand(null, PaymentProvider.CASH, gateways, orderService, paymentService));
+                    () -> new PayOrderCommand(null, PaymentProvider.CASH, gateways, orderService, paymentService, Actor.SYSTEM, staffAccess));
             assertThrows(NullPointerException.class,
-                    () -> new PayOrderCommand(1L, null, gateways, orderService, paymentService));
+                    () -> new PayOrderCommand(1L, null, gateways, orderService, paymentService, Actor.SYSTEM, staffAccess));
             assertThrows(NullPointerException.class,
-                    () -> new PayOrderCommand(1L, PaymentProvider.CASH, null, orderService, paymentService));
+                    () -> new PayOrderCommand(1L, PaymentProvider.CASH, null, orderService, paymentService, Actor.SYSTEM, staffAccess));
             assertThrows(NullPointerException.class,
-                    () -> new PayOrderCommand(1L, PaymentProvider.CASH, gateways, null, paymentService));
+                    () -> new PayOrderCommand(1L, PaymentProvider.CASH, gateways, null, paymentService, Actor.SYSTEM, staffAccess));
             assertThrows(NullPointerException.class,
-                    () -> new PayOrderCommand(1L, PaymentProvider.CASH, gateways, orderService, null));
+                    () -> new PayOrderCommand(1L, PaymentProvider.CASH, gateways, orderService, null, Actor.SYSTEM, staffAccess));
         }
 
         @Test
@@ -418,7 +421,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
     class FulfillOrderCommandTests {
 
         private FulfillOrderCommand fulfill(Long orderId) {
-            return new FulfillOrderCommand(orderId, orderService, events, users, paymentService);
+            return new FulfillOrderCommand(orderId, orderService, events, users, paymentService, Actor.SYSTEM, staffAccess);
         }
 
         @Test
@@ -505,9 +508,9 @@ class OrderCommandTest extends AbstractIntegrationTest {
         @DisplayName("constructor rejects a null UserRepository or PaymentService")
         void rejectsNulls() {
             assertThrows(NullPointerException.class,
-                    () -> new FulfillOrderCommand(1L, orderService, events, null, paymentService));
+                    () -> new FulfillOrderCommand(1L, orderService, events, null, paymentService, Actor.SYSTEM, staffAccess));
             assertThrows(NullPointerException.class,
-                    () -> new FulfillOrderCommand(1L, orderService, events, users, null));
+                    () -> new FulfillOrderCommand(1L, orderService, events, users, null, Actor.SYSTEM, staffAccess));
         }
     }
 
@@ -519,7 +522,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
         @DisplayName("execute() cancels an order that is still in progress")
         void execute() {
             Long id = orderAt(OrderStatus.PLACED);
-            invoker.executeCommand(new CancelOrderCommand(id, orderService, events));
+            invoker.executeCommand(new CancelOrderCommand(id, orderService, events, Actor.SYSTEM, staffAccess));
             assertEquals(OrderStatus.CANCELLED, statusOf(id));
         }
 
@@ -528,7 +531,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
         void rejectsFulfilled() {
             Long id = orderAt(OrderStatus.FULFILLED);
             assertThrows(IllegalStateException.class,
-                    () -> invoker.executeCommand(new CancelOrderCommand(id, orderService, events)));
+                    () -> invoker.executeCommand(new CancelOrderCommand(id, orderService, events, Actor.SYSTEM, staffAccess)));
             assertEquals(OrderStatus.FULFILLED, statusOf(id));
         }
 
@@ -536,7 +539,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
         @DisplayName("undo() of cancelling a PLACED order is not supported (it would never be queued again)")
         void undoNotSupportedFromPlaced() {
             Long id = orderAt(OrderStatus.PLACED);
-            invoker.executeCommand(new CancelOrderCommand(id, orderService, events));
+            invoker.executeCommand(new CancelOrderCommand(id, orderService, events, Actor.SYSTEM, staffAccess));
 
             assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast());
 
@@ -547,7 +550,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
         @DisplayName("undo() restores the status the order held before cancellation (READY)")
         void undo() {
             Long id = orderAt(OrderStatus.READY);
-            invoker.executeCommand(new CancelOrderCommand(id, orderService, events));
+            invoker.executeCommand(new CancelOrderCommand(id, orderService, events, Actor.SYSTEM, staffAccess));
 
             invoker.undoLast();
 
@@ -557,7 +560,7 @@ class OrderCommandTest extends AbstractIntegrationTest {
         @Test
         @DisplayName("is named CancelOrder")
         void name() {
-            assertEquals("CancelOrder", new CancelOrderCommand(1L, orderService, events).name());
+            assertEquals("CancelOrder", new CancelOrderCommand(1L, orderService, events, Actor.SYSTEM, staffAccess).name());
         }
     }
 }

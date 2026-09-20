@@ -1,5 +1,7 @@
 package dev.saberlabs.coffeechat.support;
 
+import dev.saberlabs.coffeechat.service.StaffService;
+import dev.saberlabs.coffeechat.service.StaffAccess;
 import dev.saberlabs.coffeechat.SharedPostgresContainer;
 import dev.saberlabs.coffeechat.adapter.PaymentGatewayResolver;
 import dev.saberlabs.coffeechat.command.OrderInvoker;
@@ -81,6 +83,7 @@ public abstract class AbstractIntegrationTest extends SharedPostgresContainer {
                 gateways,
                 context.getBean(OrderService.class),
                 context.getBean(PaymentService.class),
+                context.getBean(StaffAccess.class),
                 context.getBean(CustomerService.class),
                 users,
                 context.getBean(OrderEventPublisher.class),
@@ -143,6 +146,14 @@ public abstract class AbstractIntegrationTest extends SharedPostgresContainer {
             jdbc.update("UPDATE user_accounts SET fulfilled_orders = ? WHERE id = ?", fulfilledOrders, saved.id());
         }
         return saved;
+    }
+
+    protected UserEntity barista(String name) {
+        return context.getBean(StaffService.class).createBarista(name);
+    }
+
+    protected UserEntity manager(String name) {
+        return context.getBean(StaffService.class).createManager(name);
     }
 
     protected UserEntity customer(String name) {

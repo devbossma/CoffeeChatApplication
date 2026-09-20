@@ -1,6 +1,8 @@
 package dev.saberlabs.coffeechat.command;
 
 import dev.saberlabs.coffeechat.entity.OrderEntity;
+import dev.saberlabs.coffeechat.facade.Actor;
+import dev.saberlabs.coffeechat.service.StaffAccess;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 import dev.saberlabs.coffeechat.observer.OrderEventPublisher;
 import dev.saberlabs.coffeechat.repository.UserRepository;
@@ -29,14 +31,17 @@ public class FulfillOrderCommand extends AbstractOrderCommand {
                                @NotNull OrderService orders,
                                @NotNull OrderEventPublisher events,
                                @NotNull UserRepository users,
-                               @NotNull PaymentService payments) {
-        super(orderId, orders, events);
+                               @NotNull PaymentService payments,
+                               @NotNull Actor actor,
+                               @NotNull StaffAccess access) {
+        super(orderId, orders, events, actor, access);
         this.users = Objects.requireNonNull(users, "users cannot be null");
         this.payments = Objects.requireNonNull(payments, "payments cannot be null");
     }
 
     @Override
     public void execute() {
+        authorize(StaffAccess.STAFF);
         OrderEntity order = orders.require(orderId);
         if (order.status() == OrderStatus.READY) {
             // Checked before the transition and the increment, inside the same transaction. A status

@@ -1,5 +1,6 @@
 package dev.saberlabs.coffeechat.multithread;
 
+import dev.saberlabs.coffeechat.facade.Actor;
 import dev.saberlabs.coffeechat.facade.CoffeeShopFacade;
 import dev.saberlabs.coffeechat.facade.OrderNotFoundException;
 import dev.saberlabs.coffeechat.model.IllegalOrderTransitionException;
@@ -32,7 +33,7 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Per the {@code CLAUDE.md} hard rule, this class never touches {@code OrderService},
  * {@code OrderInvoker}, or a {@code Command} directly &mdash; every order it finishes preparing
- * goes back through {@link CoffeeShopFacade#prepareOrder(Long)}, the same door every other entry
+ * goes back through {@link CoffeeShopFacade#prepareOrder(Long, Actor)} as {@link Actor#SYSTEM} (the loops are automation, not a person, so no {@code changed_by}), the same door every other entry
  * point uses. The consumer thread is not inside a transaction; each facade call opens its own.
  */
 @Service
@@ -123,7 +124,7 @@ public class Barista {
     private void prepare(String barista, Long orderId) {
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             try {
-                facade.prepareOrder(orderId);
+                facade.prepareOrder(orderId, Actor.SYSTEM);
                 unexpectedAttempts.remove(orderId);
                 log.info("{} prepared order {}", barista, orderId);
                 return;

@@ -1,5 +1,7 @@
 package dev.saberlabs.coffeechat.observer;
 
+import dev.saberlabs.coffeechat.service.StaffAccess;
+import dev.saberlabs.coffeechat.facade.Actor;
 import dev.saberlabs.coffeechat.adapter.PaymentProvider;
 import dev.saberlabs.coffeechat.command.CancelOrderCommand;
 import dev.saberlabs.coffeechat.command.OrderCommand;
@@ -61,6 +63,7 @@ class OrderLifecycleEventsTest extends AbstractIntegrationTest {
     @Autowired CoffeePreparationResolver preparations;
     @Autowired OrderStatusHistoryListener historyListener;
     @Autowired TransactionTemplate tx;
+    @Autowired StaffAccess staffAccess;
 
     private static final PriceBreakdown PRICE =
             PriceBreakdown.of(new BigDecimal("2.50"), new BigDecimal("0.00"), new BigDecimal("0.00"));
@@ -105,7 +108,7 @@ class OrderLifecycleEventsTest extends AbstractIntegrationTest {
         void prepareRows() {
             Order order = place(customer("Alice"));
 
-            facade.prepareOrder(order.id());
+            facade.prepareOrder(order.id(), Actor.SYSTEM);
 
             List<OrderStatusHistoryEntity> rows = trail(order.id());
             assertEquals(List.of(OrderStatus.PLACED, OrderStatus.PREPARING, OrderStatus.READY),
@@ -119,7 +122,7 @@ class OrderLifecycleEventsTest extends AbstractIntegrationTest {
         void auditAgreesWithState() {
             Order order = place(customer("Alice"));
 
-            facade.processOrder(order.id(), PaymentProvider.CASH);
+            facade.processOrder(order.id(), PaymentProvider.CASH, Actor.SYSTEM);
 
             List<OrderStatusHistoryEntity> rows = trail(order.id());
             OrderStatus lastRecorded = rows.get(rows.size() - 1).toStatus();
@@ -136,7 +139,7 @@ class OrderLifecycleEventsTest extends AbstractIntegrationTest {
         void rollbackTakesTheAuditWithIt() {
             Order order = place(customer("Alice"));
             OrderCommand cancelThenFail = new OrderCommand() {
-                private final CancelOrderCommand cancel = new CancelOrderCommand(order.id(), orderService, events);
+                private final CancelOrderCommand cancel = new CancelOrderCommand(order.id(), orderService, events, Actor.SYSTEM, staffAccess);
                 @Override public void execute() {
                     cancel.execute();
                     throw new IllegalStateException("boom after the transition");
@@ -153,18 +156,19 @@ class OrderLifecycleEventsTest extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("if the audit write itself fails, the status change is rolled back too and nothing is announced")
+        @DisplayName("if the audit write itself fails (a changed_by that is not a real BARISTA), the status change is rolled back too and nothing is announced")
         void auditFailureRollsBackState() {
             Order order = place(customer("Alice"));
             long notificationsBefore = notifications.notificationsFor(order.id()).size();
             PrepareOrderCommand prepareWithBogusActor =
-                    new PrepareOrderCommand(order.id(), orderService, events, preparations) {
+                    new PrepareOrderCommand(order.id(), orderService, events, preparations, Actor.SYSTEM, staffAccess) {
                         @Override public Long actorUserId() {
-                            return 987_654L; // no such user: the changed_by FK rejects the history insert
+                            return 987_654L; // no such user: the history listener refuses to record it
                         }
                     };
 
-            assertThrows(DataIntegrityViolationException.class, () -> invoker.executeCommand(prepareWithBogusActor));
+            IllegalStateException failure = assertThrows(IllegalStateException.class, () -> invoker.executeCommand(prepareWithBogusActor));
+            assertTrue(failure.getMessage().contains("987654"), "the failure names the offending user id: " + failure.getMessage());
 
             assertEquals(OrderStatus.PLACED, orders.findById(order.id()).orElseThrow().status());
             assertEquals(1, trail(order.id()).size());
@@ -185,6 +189,41 @@ class OrderLifecycleEventsTest extends AbstractIntegrationTest {
                     "SELECT changed_by FROM order_status_history WHERE order_id = ? AND to_status = 'PREPARING'",
                     Long.class, order.id());
             assertEquals(barista.id(), recordedActor);
+        }
+
+        @Test
+        @DisplayName("only a BARISTA may be recorded: a MANAGER or CUSTOMER id is refused, and the message names the user id and role")
+        void onlyBaristaMayBeRecorded() {
+            Order order = place(customer("Alice"));
+            UserEntity manager = manager("Maria");
+            UserEntity other = customer("Mallory");
+
+            for (UserEntity notABarista : List.of(manager, other)) {
+                IllegalStateException failure = assertThrows(IllegalStateException.class, () -> tx.executeWithoutResult(status ->
+                        historyListener.onOrderStatusChanged(new OrderStatusChangedEvent(order.id(), order.customerId(),
+                                OrderStatus.PLACED, OrderStatus.PREPARING, Instant.now(), notABarista.id()))));
+                assertTrue(failure.getMessage().contains(String.valueOf(notABarista.id())), failure.getMessage());
+                assertTrue(failure.getMessage().contains(notABarista.role().name()), failure.getMessage());
+            }
+            assertEquals(1, trail(order.id()).size(), "nothing was written");
+        }
+
+        @Test
+        @DisplayName("a non-BARISTA actor smuggled into a command rolls the whole status change back (same transaction as the check)")
+        void nonBaristaActorRollsBack() {
+            Order order = place(customer("Alice"));
+            UserEntity manager = manager("Maria");
+            PrepareOrderCommand smuggled =
+                    new PrepareOrderCommand(order.id(), orderService, events, preparations, Actor.SYSTEM, staffAccess) {
+                        @Override public Long actorUserId() {
+                            return manager.id();
+                        }
+                    };
+
+            assertThrows(IllegalStateException.class, () -> invoker.executeCommand(smuggled));
+
+            assertEquals(OrderStatus.PLACED, orders.findById(order.id()).orElseThrow().status());
+            assertEquals(1, trail(order.id()).size());
         }
 
         @Test
@@ -256,7 +295,7 @@ class OrderLifecycleEventsTest extends AbstractIntegrationTest {
             orderQueue.poll(0, java.util.concurrent.TimeUnit.MILLISECONDS);
             assertTrue(orderQueue.isEmpty());
 
-            facade.prepareOrder(order.id());
+            facade.prepareOrder(order.id(), Actor.SYSTEM);
 
             assertTrue(orderQueue.isEmpty());
         }
