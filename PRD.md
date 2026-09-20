@@ -299,6 +299,63 @@ the order row (a payment, the loyalty count, the queue) that are not reversed.
 and order preserved by `@OrderColumn`), never copies id/status/timestamps/price/tier, and ends in
 `facade.placeOrder`, so the clone is priced at the customer's *current* tier and queued like any order.
 
+### 9.6 Role enforcement (Part 03 Step 4, as built)
+
+`Role` (`CUSTOMER` / `BARISTA` / `MANAGER`) has one real enforced boundary. It is a plain
+service-layer check (`StaffAccess`); there is no Spring Security and no authentication (§4).
+
+**Actor model.** Every facade method that changes order status takes an `Actor`: either a claimed user
+id (`Actor.user(id)`) or `Actor.SYSTEM`, trusted in-process automation (the async barista loops,
+`processOrder`, tests) that skips the role check and is never recorded as a person. The actor-less
+signatures were removed rather than kept as overloads, so there is no unenforced back door. `Actor.SYSTEM`
+is a public constant, so a guard test scans the `controller` package (source and bytecode) and fails
+the build if any controller references it: an endpoint can never act as the system. A missing identity
+must never silently become the system (`Actor.user(null)` is rejected).
+
+**Who may do what.**
+
+| Operation | Allowed | Otherwise |
+|---|---|---|
+| prepare, fulfil, cancel, undo (status transitions) | BARISTA, MANAGER, `SYSTEM` | CUSTOMER (even the order's own): **403** |
+| pay | staff (BARISTA, MANAGER), the order's **own** CUSTOMER, `SYSTEM` | a different customer: **403**, before the gateway is called |
+| place | CUSTOMER only (`CustomerNotFoundException` for any other user id) | 404 |
+| reorder | see below | |
+
+The check runs inside the command's own transaction, before anything changes, so it is atomic with the
+change and a rejected action leaves no trace (proven for prepare, fulfil, cancel and pay: status, audit
+rows, payments, `fulfilled_orders`, notifications and the gateway are untouched).
+
+**`changed_by` rule.** Only a BARISTA is ever recorded; it is NULL for the system and for manager-driven
+changes. `OrderStatusHistoryListener` (the one place it is written) verifies the role in the same
+transaction and refuses anything else, rolling the change back, because a foreign key cannot check the
+referenced user's role; its message names the user id and role. An undo is attributed to whoever asked for
+it, not to whoever ran the original command.
+
+**HTTP mapping.** No actor or an unknown user id: **401** (`UnknownActorException`, the caller cannot be
+identified). A known user whose role does not permit the action: **403** (`RoleNotAllowedException`).
+Unknown order: 404. Illegal transition, unpaid fulfilment, already-paid or not-READY payment, unsupported
+undo, lost `@Version` race: 409. There is no REST endpoint for the transitions yet (Step 6); the mapping
+is in place and tested for it. The caller's identity will arrive as a user id (an `X-User-Id` header),
+not as credentials.
+
+**Reorder.** The clone belongs to the *original order's customer*, and the request already names no
+caller. This is safe until Step 6 because it exposes nothing that `POST /api/orders` does not: with no
+authentication, anyone can already place an order for any customer id, and reorder cannot place one for
+anybody except that order's own customer. A caller identity check for reorder (only that customer, or
+staff) is a Step 6 concern, together with the endpoint's identity header.
+
+**Creating staff.** `StaffService.createBarista` / `createManager` exist (used by tests and by Step 5
+chat); there is deliberately no REST endpoint, because with no authentication an open endpoint that mints
+managers would defeat the boundary.
+
+**Known limitations and Step 6 notes.**
+- Customers cannot cancel their own order through the API yet (only staff can).
+- `undoLastAction` and cancel are staff-only; a customer cannot undo a placement.
+- **Step 6 must solve bootstrapping:** a freshly started app has no way to create a barista or manager, so
+  a reviewer could not exercise the role-gated endpoints. Plan: a manager-guarded staff-creation endpoint
+  plus an initial manager seeded from configuration (property-driven, off by default in tests).
+- A MANAGER's actions are not attributable in the audit trail (`changed_by` is NULL by rule).
+
 ## 10. Testing (Part 04)
 
 - **Unit tests** (JUnit 5 + Mockito): one test class per service/component,

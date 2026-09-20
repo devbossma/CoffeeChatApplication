@@ -4,6 +4,10 @@ import dev.saberlabs.coffeechat.facade.CoffeeShopFacade;
 import dev.saberlabs.coffeechat.facade.CoffeeNotOnMenuException;
 import dev.saberlabs.coffeechat.facade.CustomerNotFoundException;
 import dev.saberlabs.coffeechat.facade.OrderNotFoundException;
+import dev.saberlabs.coffeechat.facade.OrderStateConflictException;
+import dev.saberlabs.coffeechat.facade.RoleNotAllowedException;
+import dev.saberlabs.coffeechat.facade.UnknownActorException;
+import dev.saberlabs.coffeechat.model.Role;
 import dev.saberlabs.coffeechat.facade.ShopClosedException;
 import dev.saberlabs.coffeechat.model.CoffeeType;
 import dev.saberlabs.coffeechat.model.Order;
@@ -152,6 +156,38 @@ class OrderControllerTest {
 
             mvc.perform(post("/api/orders/1/reorder"))
                     .andExpect(status().isConflict());
+        }
+
+        @Test
+        @DisplayName("401 when the caller cannot be identified (UnknownActorException), with the reason in the body")
+        void unknownActor() throws Exception {
+            when(facade.reorder(1L)).thenThrow(UnknownActorException.noSuchUser(987L));
+
+            mvc.perform(post("/api/orders/1/reorder"))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.detail").value("No user with id 987"));
+        }
+
+        @Test
+        @DisplayName("403 when a known user's role does not permit the action (RoleNotAllowedException)")
+        void roleNotAllowed() throws Exception {
+            when(facade.reorder(1L)).thenThrow(new RoleNotAllowedException(5L, Role.CUSTOMER, "cancel orders"));
+
+            mvc.perform(post("/api/orders/1/reorder"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.detail").value("User 5 (CUSTOMER) is not allowed to cancel orders"));
+        }
+
+        @Test
+        @DisplayName("401, 403 and 409 are three distinct statuses (unknown actor / wrong role / state conflict)")
+        void distinctStatuses() throws Exception {
+            when(facade.reorder(1L)).thenThrow(UnknownActorException.noSuchUser(1L));
+            when(facade.reorder(2L)).thenThrow(new RoleNotAllowedException(2L, Role.CUSTOMER, "x"));
+            when(facade.reorder(3L)).thenThrow(new OrderStateConflictException("unpaid"));
+
+            mvc.perform(post("/api/orders/1/reorder")).andExpect(status().isUnauthorized());
+            mvc.perform(post("/api/orders/2/reorder")).andExpect(status().isForbidden());
+            mvc.perform(post("/api/orders/3/reorder")).andExpect(status().isConflict());
         }
 
         @Test

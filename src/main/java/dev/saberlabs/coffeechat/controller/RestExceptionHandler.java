@@ -5,7 +5,9 @@ import dev.saberlabs.coffeechat.facade.CoffeeNotOnMenuException;
 import dev.saberlabs.coffeechat.facade.CustomerNotFoundException;
 import dev.saberlabs.coffeechat.facade.OrderNotFoundException;
 import dev.saberlabs.coffeechat.facade.OrderStateConflictException;
+import dev.saberlabs.coffeechat.facade.RoleNotAllowedException;
 import dev.saberlabs.coffeechat.facade.ShopClosedException;
+import dev.saberlabs.coffeechat.facade.UnknownActorException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -23,6 +25,18 @@ public class RestExceptionHandler {
     @ExceptionHandler({ShopClosedException.class, CoffeeNotOnMenuException.class, OrderStateConflictException.class})
     public ProblemDetail onConflict(RuntimeException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+    }
+
+    /** The caller could not be identified (no actor, or an unknown user id). */
+    @ExceptionHandler(UnknownActorException.class)
+    public ProblemDetail onUnknownActor(UnknownActorException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.UNAUTHORIZED, ex.getMessage());
+    }
+
+    /** A known user whose role does not permit the action. */
+    @ExceptionHandler(RoleNotAllowedException.class)
+    public ProblemDetail onRoleNotAllowed(RoleNotAllowedException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, ex.getMessage());
     }
 
     @ExceptionHandler(UndoNotSupportedException.class)
