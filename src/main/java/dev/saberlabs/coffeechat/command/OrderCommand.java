@@ -19,4 +19,16 @@ public interface OrderCommand {
 
     /** Short stable name for the history log, e.g. {@code "PlaceOrder"}. */
     String name();
+
+    /**
+     * The user this command acts on behalf of, recorded as {@code order_status_history.changed_by};
+     * {@code null} means an automated/system action.
+     *
+     * <p><b>Step 4 seam.</b> Step 3 never overrides this, so every history row has a NULL actor.
+     * Step 4 adds the real actor path here, together with the application-layer check that the
+     * actor's role is BARISTA (a plain foreign key cannot enforce that).
+     */
+    default Long actorUserId() {
+        return null;
+    }
 }

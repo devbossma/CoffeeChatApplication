@@ -48,7 +48,7 @@ public class PlaceOrderCommand extends AbstractOrderCommand {
     public void execute() {
         OrderEntity order = orders.create(customers.require(customerId), type, extras, appliedTier, price);
         this.orderId = order.id();
-        events.publishStatusChange(order, null);
+        events.publishStatusChange(order, null, actorUserId());
     }
 
     @Override

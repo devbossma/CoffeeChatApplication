@@ -37,7 +37,7 @@ abstract class AbstractOrderCommand implements OrderCommand {
         OrderEntity order = orders.require(orderId);
         OrderStatus from = order.status();
         order.transitionTo(target);
-        events.publishStatusChange(order, from);
+        events.publishStatusChange(order, from, actorUserId());
     }
 
     /** undo-only reverse move: force the status back, then publish {@code from -> back}. */
@@ -45,6 +45,6 @@ abstract class AbstractOrderCommand implements OrderCommand {
         OrderEntity order = orders.require(orderId);
         OrderStatus from = order.status();
         order.restoreStatus(back);
-        events.publishStatusChange(order, from);
+        events.publishStatusChange(order, from, actorUserId());
     }
 }

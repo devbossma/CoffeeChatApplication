@@ -18,12 +18,22 @@ import java.util.Objects;
  * @param from       the previous status, or {@code null} if the order was just placed
  * @param to         the new status
  * @param at         when the transition happened
+ * @param actorUserId the user who caused it, or {@code null} for an automated/system transition.
+ *                   Step 3 always passes {@code null}; Part 03 Step 4 supplies a BARISTA here
+ *                   (see {@code OrderCommand#actorUserId()}), which the history listener maps to
+ *                   {@code order_status_history.changed_by}
  */
 public record OrderStatusChangedEvent(Long orderId,
                                       Long customerId,
                                       OrderStatus from,
                                       OrderStatus to,
-                                      Instant at) {
+                                      Instant at,
+                                      Long actorUserId) {
+
+    /** A system (actor-less) transition. */
+    public OrderStatusChangedEvent(Long orderId, Long customerId, OrderStatus from, OrderStatus to, Instant at) {
+        this(orderId, customerId, from, to, at, null);
+    }
 
     public OrderStatusChangedEvent {
         Objects.requireNonNull(orderId, "orderId cannot be null");
@@ -36,14 +46,16 @@ public record OrderStatusChangedEvent(Long orderId,
      *
      * @param order the order, post-transition (its {@code status()} is the new one)
      * @param from  the status it held before the transition
+     * @param actorUserId the user who caused it, or {@code null} for a system transition
      */
-    public static OrderStatusChangedEvent of(OrderEntity order, OrderStatus from) {
+    public static OrderStatusChangedEvent of(OrderEntity order, OrderStatus from, Long actorUserId) {
         Objects.requireNonNull(order, "order cannot be null");
         return new OrderStatusChangedEvent(
                 order.id(),
                 order.customer().id(),
                 from,
                 order.status(),
-                Instant.now());
+                Instant.now(),
+                actorUserId);
     }
 }

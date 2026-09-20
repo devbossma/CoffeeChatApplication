@@ -104,7 +104,7 @@ class OrderStatusHistoryRepositoryTest extends AbstractRepositoryTest {
     }
 
     @Nested
-    @DisplayName("findByOrderIdOrderByChangedAtAsc()")
+    @DisplayName("findByOrderIdOrderByChangedAtAscIdAsc()")
     class FindByOrderIdOrderByChangedAtAscTests {
 
         @Test
@@ -118,12 +118,26 @@ class OrderStatusHistoryRepositoryTest extends AbstractRepositoryTest {
             historyRepository.saveAndFlush(new OrderStatusHistoryEntity(
                     order, OrderStatus.PREPARING, OrderStatus.READY, base.plusSeconds(2), barista));
 
-            List<OrderStatusHistoryEntity> trail = historyRepository.findByOrderIdOrderByChangedAtAsc(order.id());
+            List<OrderStatusHistoryEntity> trail = historyRepository.findByOrderIdOrderByChangedAtAscIdAsc(order.id());
 
             assertEquals(3, trail.size());
             assertEquals(OrderStatus.PLACED, trail.get(0).toStatus());
             assertEquals(OrderStatus.PREPARING, trail.get(1).toStatus());
             assertEquals(OrderStatus.READY, trail.get(2).toStatus());
+        }
+
+        @Test
+        @DisplayName("rows written at the very same instant keep their write order (id breaks the tie)")
+        void sameInstantKeepsWriteOrder() {
+            Instant same = Instant.now();
+            historyRepository.saveAndFlush(new OrderStatusHistoryEntity(order, null, OrderStatus.PLACED, same, null));
+            historyRepository.saveAndFlush(new OrderStatusHistoryEntity(order, OrderStatus.PLACED, OrderStatus.PREPARING, same, null));
+            historyRepository.saveAndFlush(new OrderStatusHistoryEntity(order, OrderStatus.PREPARING, OrderStatus.READY, same, null));
+
+            List<OrderStatusHistoryEntity> trail = historyRepository.findByOrderIdOrderByChangedAtAscIdAsc(order.id());
+
+            assertEquals(List.of(OrderStatus.PLACED, OrderStatus.PREPARING, OrderStatus.READY),
+                    trail.stream().map(OrderStatusHistoryEntity::toStatus).toList());
         }
     }
 }
