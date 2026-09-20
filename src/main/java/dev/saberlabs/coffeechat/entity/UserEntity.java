@@ -87,9 +87,16 @@ public class UserEntity {
         return o instanceof UserEntity other && id != null && id.equals(other.id());
     }
 
+    /**
+     * A constant, not {@code Objects.hashCode(id)}: {@code id} is null until first persisted, so
+     * a hashCode derived from it would change after the entity moves into a {@code HashSet}/
+     * {@code HashMap} it was already added to before persisting, silently making it unfindable by
+     * its own bucket. Equality is still id-based via {@link #equals}; only the hash bucket is
+     * fixed for the entity's whole lifecycle. The standard JPA identifier-equality pattern.
+     */
     @Override
     public int hashCode() {
-        return Objects.hashCode(id);
+        return getClass().hashCode();
     }
 
     @Override

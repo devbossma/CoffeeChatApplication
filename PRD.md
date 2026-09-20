@@ -233,8 +233,9 @@ All four were open at scaffold time and are now settled — full rationale for e
 the PRD and `CLAUDE.md` don't drift apart.
 
 1. **Async dispatch shape.** N `@Async` consumer loops (pool size from a `ThreadPoolTaskExecutor`
-   bean), started once via `@EventListener(ApplicationReadyEvent.class)`, blocking on
-   `orderQueue.take()` — not a `@Scheduled` poller.
+   bean), launched once by `BaristaSupervisor` (a `SmartLifecycle` auto-start, so a paused-then-resumed
+   context restarts them), waiting on a timed `orderQueue.poll(...)` so a stop flag is noticed
+   without an interrupt — not a `@Scheduled` poller.
 2. **Strategy bean keying.** Each `PricingStrategy` exposes `supportedTier()`; a
    `PricingStrategyResolver` builds an `EnumMap<LoyaltyTier, PricingStrategy>` from the injected
    `List<PricingStrategy>` — no bean-name string matching, no per-tier qualifier annotation.

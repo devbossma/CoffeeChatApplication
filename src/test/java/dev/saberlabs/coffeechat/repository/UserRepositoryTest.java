@@ -45,20 +45,23 @@ class UserRepositoryTest extends AbstractRepositoryTest {
         @Test
         @DisplayName("rejects a null name at the database level")
         void rejectsNullName() {
-            assertConstraintViolation("INSERT INTO user_accounts (name, role) VALUES (NULL, 'CUSTOMER')");
+            assertConstraintViolation("INSERT INTO user_accounts (name, role) VALUES (NULL, 'CUSTOMER')",
+                    NOT_NULL_VIOLATION, "name");
         }
 
         @Test
         @DisplayName("rejects a role outside CUSTOMER/BARISTA/MANAGER at the database level")
         void rejectsInvalidRole() {
-            assertConstraintViolation("INSERT INTO user_accounts (name, role) VALUES ('Bob', 'ROBOT')");
+            assertConstraintViolation("INSERT INTO user_accounts (name, role) VALUES ('Bob', 'ROBOT')",
+                    CHECK_VIOLATION, "chk_user_role");
         }
 
         @Test
         @DisplayName("rejects a negative fulfilled_orders at the database level")
         void rejectsNegativeFulfilledOrders() {
             assertConstraintViolation(
-                    "INSERT INTO user_accounts (name, role, fulfilled_orders) VALUES ('Bob', 'CUSTOMER', -1)");
+                    "INSERT INTO user_accounts (name, role, fulfilled_orders) VALUES ('Bob', 'CUSTOMER', -1)",
+                    CHECK_VIOLATION, "chk_user_fulfilled_orders_nonneg");
         }
     }
 

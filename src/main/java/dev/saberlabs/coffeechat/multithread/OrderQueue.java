@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A bounded, thread-safe queue of placed orders awaiting preparation.
@@ -58,6 +59,17 @@ public class OrderQueue {
      */
     public Order take() throws InterruptedException {
         return queue.take();
+    }
+
+    /**
+     * Removes and returns the next order, waiting up to {@code timeout} for one to arrive.
+     *
+     * @return the next order, or {@code null} if none arrived within the timeout
+     * @throws InterruptedException if the calling thread is interrupted while waiting
+     */
+    public Order poll(long timeout, @NotNull TimeUnit unit) throws InterruptedException {
+        Objects.requireNonNull(unit, "unit cannot be null");
+        return queue.poll(timeout, unit);
     }
 
     public int size() {

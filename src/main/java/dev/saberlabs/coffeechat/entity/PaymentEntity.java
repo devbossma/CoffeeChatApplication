@@ -14,6 +14,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
 import jakarta.validation.constraints.NotNull;
+import org.hibernate.Hibernate;
 import org.jetbrains.annotations.Nullable;
 
 import java.math.BigDecimal;
@@ -128,14 +129,17 @@ public class PaymentEntity {
         return o instanceof PaymentEntity other && id != null && id.equals(other.id());
     }
 
+    /** A constant, not {@code Objects.hashCode(id)} -- see {@code UserEntity.hashCode()}'s javadoc. */
     @Override
     public int hashCode() {
-        return Objects.hashCode(id);
+        return getClass().hashCode();
     }
 
+    /** Never dereferences {@link #order} beyond a proxy-initialization check -- see {@code OrderEntity.toString()}'s javadoc. */
     @Override
     public String toString() {
+        String orderDescription = Hibernate.isInitialized(order) ? String.valueOf(order.id()) : "<lazy>";
         return "PaymentEntity[id=%s, order=%s, provider=%s, amount=%s, status=%s]"
-                .formatted(id, order.id(), provider, amount, status);
+                .formatted(id, orderDescription, provider, amount, status);
     }
 }

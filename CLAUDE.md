@@ -131,8 +131,10 @@ connection-refused failures partway through a run that passes fine in isolation.
 ### Resolving PRD §11's open questions
 
 1. **Async dispatch shape (§11.1) — resolved.** N `@Async` consumer loops (pool size from a
-   `ThreadPoolTaskExecutor` bean), each started once via
-   `@EventListener(ApplicationReadyEvent.class)`, blocking on `orderQueue.take()`. This is the
+   `ThreadPoolTaskExecutor` bean), each launched once by
+   `BaristaSupervisor`, a `SmartLifecycle` auto-start (not an `ApplicationReadyEvent` listener: a
+   resumed, previously paused test context only restarts lifecycle beans), waiting on a *timed*
+   `orderQueue.poll(...)` so a stop flag is noticed without an interrupt. This is the
    closest Spring-idiomatic match to the old `Barista.run()` loop, and avoids the latency/busy-work
    a `@Scheduled` poller re-checking an empty queue would add.
 2. **Strategy bean keying (§11.2) — resolved.** Each `PricingStrategy` exposes

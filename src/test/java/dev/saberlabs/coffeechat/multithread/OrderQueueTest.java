@@ -169,6 +169,53 @@ class OrderQueueTest {
     }
 
     @Nested
+    @DisplayName("poll()")
+    class PollTests {
+
+        @Test
+        @DisplayName("returns the next order immediately when one is available")
+        void returnsAvailableOrder() throws InterruptedException {
+            OrderQueue queue = new OrderQueue(3);
+            Order order = order(1L);
+            queue.enqueue(order);
+
+            assertSame(order, queue.poll(1, java.util.concurrent.TimeUnit.SECONDS));
+        }
+
+        @Test
+        @DisplayName("returns null once the timeout elapses on an empty queue")
+        void returnsNullOnTimeout() throws InterruptedException {
+            assertNull(new OrderQueue(3).poll(20, java.util.concurrent.TimeUnit.MILLISECONDS));
+        }
+
+        @Test
+        @DisplayName("propagates interruption while waiting")
+        void propagatesInterruption() throws InterruptedException {
+            OrderQueue queue = new OrderQueue(3);
+            AtomicBoolean interrupted = new AtomicBoolean(false);
+            Thread consumer = new Thread(() -> {
+                try {
+                    queue.poll(10, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    interrupted.set(true);
+                }
+            });
+            consumer.start();
+            Thread.sleep(150);
+            consumer.interrupt();
+            consumer.join(2000);
+
+            assertTrue(interrupted.get());
+        }
+
+        @Test
+        @DisplayName("rejects a null TimeUnit")
+        void rejectsNullUnit() {
+            assertThrows(NullPointerException.class, () -> new OrderQueue(3).poll(1, null));
+        }
+    }
+
+    @Nested
     @DisplayName("size() / isEmpty() / remainingCapacity()")
     class StateTests {
 

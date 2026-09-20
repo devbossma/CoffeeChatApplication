@@ -20,6 +20,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -74,7 +75,7 @@ class OrderRepositoryTest extends AbstractRepositoryTest {
                     INSERT INTO orders (customer_id, base_coffee_type, status, applied_loyalty_tier,
                         price_base, price_extras, price_discount, price_total, placed_at, updated_at)
                     VALUES (404, 'ESPRESSO', 'PLACED', 'REGULAR', 2.50, 0.00, 0.00, 2.50, now(), now())
-                    """);
+                    """, FOREIGN_KEY_VIOLATION, "fk_orders_customer");
         }
 
         @Test
@@ -122,6 +123,24 @@ class OrderRepositoryTest extends AbstractRepositoryTest {
         void emptyWhenNoneMatch() {
             orderRepository.saveAndFlush(espressoOrder(List.of()));
             assertTrue(orderRepository.findByStatusIn(List.of(OrderStatus.CANCELLED)).isEmpty());
+        }
+    }
+
+    @Nested
+    @DisplayName("toString()")
+    class ToStringTests {
+
+        @Test
+        @DisplayName("does not dereference an uninitialized lazy customer proxy on a detached entity")
+        void safeOnDetachedLazyProxy() {
+            OrderEntity saved = orderRepository.saveAndFlush(espressoOrder(List.of()));
+            entityManager.clear();
+
+            OrderEntity reloaded = orderRepository.findById(saved.id()).orElseThrow();
+            entityManager.detach(reloaded);
+
+            String text = assertDoesNotThrow(reloaded::toString);
+            assertTrue(text.contains("<lazy>"));
         }
     }
 

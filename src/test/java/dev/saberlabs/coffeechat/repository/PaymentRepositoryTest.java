@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.jpa.test.autoconfigure.TestEntityManager;
+import org.springframework.dao.DataIntegrityViolationException;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -80,17 +81,34 @@ class PaymentRepositoryTest extends AbstractRepositoryTest {
             paymentRepository.saveAndFlush(new PaymentEntity(
                     order, PaymentProvider.CASH, new BigDecimal("2.50"), PaymentStatus.PAID, null, now, now));
 
-            assertThrows(RuntimeException.class, () -> paymentRepository.saveAndFlush(new PaymentEntity(
-                    order, PaymentProvider.STRIPE, new BigDecimal("2.50"), PaymentStatus.PAID, null, now, now)));
+            DataIntegrityViolationException thrown = assertThrows(DataIntegrityViolationException.class,
+                    () -> paymentRepository.saveAndFlush(new PaymentEntity(
+                            order, PaymentProvider.STRIPE, new BigDecimal("2.50"), PaymentStatus.PAID, null, now, now)));
+            assertTrue(thrown.getMostSpecificCause().getMessage().contains("uq_payments_order_id"));
         }
 
         @Test
         @DisplayName("rejects a non-positive amount at the database level")
         void rejectsNonPositiveAmount() {
-            assertConstraintViolation("""
+            // A fresh customer+order is inserted here (not the @BeforeEach fixture): the
+            // @BeforeEach fixture lives in this test's own JPA transaction, uncommitted, so it is
+            // invisible to assertConstraintViolation's separate connection -- referencing it here
+            // would fail on the order_id FK instead of the amount CHECK this test names. Setup and
+            // violating statement run on the SAME connection/transaction, so this fixture IS
+            // visible to it, isolating the amount CHECK as the only thing that can fail.
+            assertConstraintViolation(
+                    List.of(
+                            "INSERT INTO user_accounts (id, name, role) VALUES (900001, 'SetupCustomer', 'CUSTOMER')",
+                            """
+                            INSERT INTO orders (id, customer_id, base_coffee_type, status, applied_loyalty_tier,
+                                price_base, price_extras, price_discount, price_total, placed_at, updated_at)
+                            VALUES (900001, 900001, 'ESPRESSO', 'PLACED', 'REGULAR', 2.50, 0.00, 0.00, 2.50, now(), now())
+                            """),
+                    """
                     INSERT INTO payments (order_id, provider, amount, status, created_at, updated_at)
-                    VALUES (%d, 'CASH', 0.00, 'PAID', now(), now())
-                    """.formatted(order.id()));
+                    VALUES (900001, 'CASH', 0.00, 'PAID', now(), now())
+                    """,
+                    CHECK_VIOLATION, "chk_payment_amount_positive");
         }
     }
 

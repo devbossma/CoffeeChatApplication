@@ -16,8 +16,10 @@ import org.springframework.boot.jpa.test.autoconfigure.TestEntityManager;
 import java.time.Instant;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @DisplayName("ChatMessageRepository")
 class ChatMessageRepositoryTest extends AbstractRepositoryTest {
@@ -81,26 +83,59 @@ class ChatMessageRepositoryTest extends AbstractRepositoryTest {
             assertConstraintViolation("""
                     INSERT INTO chat_messages (session_id, type, sender_name, content, sent_at)
                     VALUES (NULL, 'CHAT_MESSAGE', 'Alice', 'hi', now())
-                    """);
+                    """, NOT_NULL_VIOLATION, "session_id");
         }
 
         @Test
         @DisplayName("rejects blank content at the database level")
         void rejectsBlankContent() {
-            assertConstraintViolation("""
+            // A fresh customer+session is inserted here, not the @BeforeEach fixture: that
+            // fixture lives in this test's own uncommitted JPA transaction and is invisible to
+            // assertConstraintViolation's separate connection, which would otherwise fail on the
+            // session_id FK instead of the content CHECK this test names.
+            assertConstraintViolation(
+                    List.of(
+                            "INSERT INTO user_accounts (id, name, role) VALUES (900003, 'SetupCustomer', 'CUSTOMER')",
+                            "INSERT INTO chat_sessions (id, customer_id, status, created_at) VALUES (900003, 900003, 'WAITING', now())"),
+                    """
                     INSERT INTO chat_messages (session_id, type, sender_name, content, sent_at)
-                    VALUES (%d, 'CHAT_MESSAGE', 'Alice', '   ', now())
-                    """.formatted(session.id()));
+                    VALUES (900003, 'CHAT_MESSAGE', 'Alice', '   ', now())
+                    """,
+                    CHECK_VIOLATION, "chk_chat_message_content_not_blank");
         }
 
         @Test
         @DisplayName("rejects content over 2000 characters at the database level")
         void rejectsOverlongContent() {
             String tooLong = "x".repeat(2001);
-            assertConstraintViolation("""
+            assertConstraintViolation(
+                    List.of(
+                            "INSERT INTO user_accounts (id, name, role) VALUES (900004, 'SetupCustomer', 'CUSTOMER')",
+                            "INSERT INTO chat_sessions (id, customer_id, status, created_at) VALUES (900004, 900004, 'WAITING', now())"),
+                    """
                     INSERT INTO chat_messages (session_id, type, sender_name, content, sent_at)
-                    VALUES (%d, 'CHAT_MESSAGE', 'Alice', '%s', now())
-                    """.formatted(session.id(), tooLong));
+                    VALUES (900004, 'CHAT_MESSAGE', 'Alice', '%s', now())
+                    """.formatted(tooLong),
+                    CHECK_VIOLATION, "chk_chat_message_content_length");
+        }
+    }
+
+    @Nested
+    @DisplayName("toString()")
+    class ToStringTests {
+
+        @Test
+        @DisplayName("does not dereference an uninitialized lazy session proxy on a detached entity")
+        void safeOnDetachedLazyProxy() {
+            ChatMessageEntity saved = messageRepository.saveAndFlush(new ChatMessageEntity(
+                    session, MessageType.CHAT_MESSAGE, customer, "Alice", "Hello!", Instant.now(), null));
+            entityManager.clear();
+
+            ChatMessageEntity reloaded = messageRepository.findById(saved.id()).orElseThrow();
+            entityManager.detach(reloaded);
+
+            String text = assertDoesNotThrow(reloaded::toString);
+            assertTrue(text.contains("<lazy>"));
         }
     }
 
@@ -110,15 +145,14 @@ class ChatMessageRepositoryTest extends AbstractRepositoryTest {
 
         @Test
         @DisplayName("returns the session's messages oldest first")
-        void returnsOldestFirst() throws InterruptedException {
+        void returnsOldestFirst() {
+            Instant base = Instant.now();
             messageRepository.saveAndFlush(new ChatMessageEntity(
-                    session, MessageType.CHAT_MESSAGE, customer, "Alice", "first", Instant.now(), null));
-            Thread.sleep(5);
+                    session, MessageType.CHAT_MESSAGE, customer, "Alice", "first", base, null));
             messageRepository.saveAndFlush(new ChatMessageEntity(
-                    session, MessageType.SYSTEM_MESSAGE, null, "System", "second", Instant.now(), null));
-            Thread.sleep(5);
+                    session, MessageType.SYSTEM_MESSAGE, null, "System", "second", base.plusSeconds(1), null));
             messageRepository.saveAndFlush(new ChatMessageEntity(
-                    session, MessageType.CHAT_MESSAGE, customer, "Alice", "third", Instant.now(), null));
+                    session, MessageType.CHAT_MESSAGE, customer, "Alice", "third", base.plusSeconds(2), null));
 
             List<ChatMessageEntity> history = messageRepository.findBySessionIdOrderBySentAtAsc(session.id());
 

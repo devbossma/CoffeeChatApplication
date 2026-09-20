@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.jpa.test.autoconfigure.TestEntityManager;
+import org.springframework.dao.DataIntegrityViolationException;
 
 import java.time.Instant;
 import java.util.List;
@@ -59,8 +60,10 @@ class ChatSessionRepositoryTest extends AbstractRepositoryTest {
         void rejectsSecondActiveSessionForSameCustomer() {
             sessionRepository.saveAndFlush(new ChatSessionEntity(customer, null, SessionStatus.WAITING, Instant.now()));
 
-            assertThrows(RuntimeException.class, () -> sessionRepository.saveAndFlush(
-                    new ChatSessionEntity(customer, null, SessionStatus.ACTIVE, Instant.now())));
+            DataIntegrityViolationException thrown = assertThrows(DataIntegrityViolationException.class,
+                    () -> sessionRepository.saveAndFlush(
+                            new ChatSessionEntity(customer, null, SessionStatus.ACTIVE, Instant.now())));
+            assertTrue(thrown.getMostSpecificCause().getMessage().contains("uq_chat_sessions_active_customer"));
         }
 
         @Test

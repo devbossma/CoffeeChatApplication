@@ -1,5 +1,6 @@
 package dev.saberlabs.coffeechat.multithread;
 
+import dev.saberlabs.coffeechat.SharedPostgresContainer;
 import dev.saberlabs.coffeechat.facade.CoffeeShopFacade;
 import dev.saberlabs.coffeechat.facade.PlaceOrderRequest;
 import dev.saberlabs.coffeechat.model.CoffeeType;
@@ -12,10 +13,6 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.List;
 
@@ -28,15 +25,10 @@ import static org.junit.jupiter.api.Assertions.fail;
  * Spring context reaches {@link OrderStatus#READY} on its own &mdash; via
  * {@code OrderStatusChangedEvent} &rarr; {@link OrderQueueDispatcher} &rarr; {@link OrderQueue}
  * &rarr; the {@link Barista} consumer loop(s) started by {@link BaristaSupervisor} on
- * {@code ApplicationReadyEvent} &mdash; with no test code calling {@code prepareOrder} directly.
+ * the supervisor's lifecycle auto-start &mdash; with no test code calling {@code prepareOrder} directly.
  */
 @SpringBootTest
-@Testcontainers
-class BaristaIntegrationTest {
-
-    @Container
-    @ServiceConnection
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:17-alpine");
+class BaristaIntegrationTest extends SharedPostgresContainer {
 
     @Autowired
     CoffeeShopFacade facade;

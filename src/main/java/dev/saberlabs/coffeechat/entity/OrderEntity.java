@@ -21,6 +21,7 @@ import jakarta.persistence.OrderColumn;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import jakarta.validation.constraints.NotNull;
+import org.hibernate.Hibernate;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -184,14 +185,24 @@ public class OrderEntity {
         return o instanceof OrderEntity other && id != null && id.equals(other.id());
     }
 
+    /** A constant, not {@code Objects.hashCode(id)} -- see {@code UserEntity.hashCode()}'s javadoc. */
     @Override
     public int hashCode() {
-        return Objects.hashCode(id);
+        return getClass().hashCode();
     }
 
+    /**
+     * Never dereferences {@link #customer} beyond checking whether its lazy proxy is already
+     * initialized ({@link Hibernate#isInitialized}, which does not itself trigger loading):
+     * calling {@code customer.id()} on an uninitialized proxy of a detached entity (no active
+     * Hibernate session) throws {@code LazyInitializationException}, since these entities use a
+     * plain {@code id()} accessor rather than the {@code getId()} spelling Hibernate's proxies
+     * special-case to answer without initializing.
+     */
     @Override
     public String toString() {
+        String customerDescription = Hibernate.isInitialized(customer) ? String.valueOf(customer.id()) : "<lazy>";
         return "OrderEntity[id=%s, customer=%s, coffee=%s, total=%s, status=%s, version=%d]"
-                .formatted(id, customer.id(), baseCoffeeType, priceTotal, status, version);
+                .formatted(id, customerDescription, baseCoffeeType, priceTotal, status, version);
     }
 }

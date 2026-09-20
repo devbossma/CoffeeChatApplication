@@ -84,10 +84,22 @@ class OrderStatusHistoryRepositoryTest extends AbstractRepositoryTest {
         @Test
         @DisplayName("rejects a changed_by that does not reference an existing user (foreign key violation)")
         void rejectsUnknownChangedBy() {
-            assertConstraintViolation("""
-                    INSERT INTO order_status_history (order_id, to_status, changed_at, changed_by)
-                    VALUES (%d, 'READY', now(), 404)
-                    """.formatted(order.id()));
+            // A fresh customer+order is inserted here, not the @BeforeEach fixture: that fixture
+            // lives in this test's own uncommitted JPA transaction and is invisible to
+            // assertConstraintViolation's separate connection, which would otherwise fail on the
+            // order_id FK instead of the changed_by FK this test names. Setup and violating
+            // statement share one connection/transaction, isolating changed_by as the only FK that
+            // can fail (order_id=900002 is valid within it; changed_by=404 genuinely is not).
+            assertConstraintViolation(
+                    List.of(
+                            "INSERT INTO user_accounts (id, name, role) VALUES (900002, 'SetupCustomer', 'CUSTOMER')",
+                            """
+                            INSERT INTO orders (id, customer_id, base_coffee_type, status, applied_loyalty_tier,
+                                price_base, price_extras, price_discount, price_total, placed_at, updated_at)
+                            VALUES (900002, 900002, 'ESPRESSO', 'PLACED', 'REGULAR', 2.50, 0.00, 0.00, 2.50, now(), now())
+                            """),
+                    "INSERT INTO order_status_history (order_id, to_status, changed_at, changed_by) VALUES (900002, 'READY', now(), 404)",
+                    FOREIGN_KEY_VIOLATION, "fk_order_status_history_changed_by");
         }
     }
 
@@ -97,15 +109,14 @@ class OrderStatusHistoryRepositoryTest extends AbstractRepositoryTest {
 
         @Test
         @DisplayName("returns the order's audit trail oldest first")
-        void returnsOldestFirst() throws InterruptedException {
+        void returnsOldestFirst() {
+            Instant base = Instant.now();
             historyRepository.saveAndFlush(new OrderStatusHistoryEntity(
-                    order, null, OrderStatus.PLACED, Instant.now(), null));
-            Thread.sleep(5);
+                    order, null, OrderStatus.PLACED, base, null));
             historyRepository.saveAndFlush(new OrderStatusHistoryEntity(
-                    order, OrderStatus.PLACED, OrderStatus.PREPARING, Instant.now(), barista));
-            Thread.sleep(5);
+                    order, OrderStatus.PLACED, OrderStatus.PREPARING, base.plusSeconds(1), barista));
             historyRepository.saveAndFlush(new OrderStatusHistoryEntity(
-                    order, OrderStatus.PREPARING, OrderStatus.READY, Instant.now(), barista));
+                    order, OrderStatus.PREPARING, OrderStatus.READY, base.plusSeconds(2), barista));
 
             List<OrderStatusHistoryEntity> trail = historyRepository.findByOrderIdOrderByChangedAtAsc(order.id());
 

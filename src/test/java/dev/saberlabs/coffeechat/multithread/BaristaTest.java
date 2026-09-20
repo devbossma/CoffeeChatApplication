@@ -125,6 +125,18 @@ class BaristaTest {
         }
 
         @Test
+        @DisplayName("an idle loop exits promptly on shutdown() alone, with no interrupt (the timed poll notices the flag)")
+        void idleLoopExitsWithoutInterrupt() throws InterruptedException {
+            startLoop();
+            Thread.sleep(50);
+
+            barista.shutdown();
+            loopThread.join(Barista.POLL_TIMEOUT_MS * 5);
+
+            assertTrue(!loopThread.isAlive(), "idle loop must notice the stop flag within a poll interval");
+        }
+
+        @Test
         @DisplayName("shutdown() combined with an interrupt stops the loop")
         void shutdownStopsLoop() throws InterruptedException {
             startLoop();
@@ -148,6 +160,20 @@ class BaristaTest {
                 latch.countDown();
                 return null;
             }).when(facade).prepareOrder(org.mockito.ArgumentMatchers.anyLong());
+        }
+    }
+
+    @Nested
+    @DisplayName("restart()")
+    class RestartTests {
+
+        @Test
+        @DisplayName("re-arms a barista that was shut down")
+        void rearms() {
+            barista.shutdown();
+            assertTrue(!barista.isRunning());
+            barista.restart();
+            assertTrue(barista.isRunning());
         }
     }
 

@@ -7,9 +7,10 @@
  * {@code OrderQueueDispatcher} enqueues an order reactively, as an {@code @EventListener} on the
  * {@code OrderStatusChangedEvent} published when an order reaches {@code PLACED} — a second,
  * independent listener alongside the observer package's notification listener, not the same one
- * doing both jobs. {@code Barista} is the consumer: an {@code @Async} loop that blocks on
- * {@code OrderQueue.take()} and, for each order, calls {@code CoffeeShopFacade.prepareOrder(id)} —
+ * doing both jobs. {@code Barista} is the consumer: an {@code @Async} loop that waits on
+ * a timed {@code OrderQueue.poll(...)} and, for each order, calls {@code CoffeeShopFacade.prepareOrder(id)} —
  * never a direct status update ({@code CLAUDE.md}). {@code BaristaSupervisor} starts N such loops
- * (N = {@code CoffeeShop.baristaPoolSize()}) once, on {@code ApplicationReadyEvent}.
+ * (N = {@code CoffeeShop.baristaPoolSize()}) as a {@code SmartLifecycle}
+ * auto-start (so a resumed, previously paused context restarts them too).
  */
 package dev.saberlabs.coffeechat.multithread;

@@ -13,6 +13,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import jakarta.validation.constraints.NotNull;
+import org.hibernate.Hibernate;
 import org.jetbrains.annotations.Nullable;
 
 import java.time.Instant;
@@ -109,14 +110,25 @@ public class OrderStatusHistoryEntity {
         return o instanceof OrderStatusHistoryEntity other && id != null && id.equals(other.id());
     }
 
+    /** A constant, not {@code Objects.hashCode(id)} -- see {@code UserEntity.hashCode()}'s javadoc. */
     @Override
     public int hashCode() {
-        return Objects.hashCode(id);
+        return getClass().hashCode();
     }
 
+    /** Never dereferences {@link #order}/{@link #changedBy} beyond a proxy-initialization check -- see {@code OrderEntity.toString()}'s javadoc. */
     @Override
     public String toString() {
+        String orderDescription = Hibernate.isInitialized(order) ? String.valueOf(order.id()) : "<lazy>";
+        String changedByDescription;
+        if (changedBy == null) {
+            changedByDescription = "system";
+        } else if (Hibernate.isInitialized(changedBy)) {
+            changedByDescription = String.valueOf(changedBy.id());
+        } else {
+            changedByDescription = "<lazy>";
+        }
         return "OrderStatusHistoryEntity[id=%s, order=%s, %s -> %s, changedBy=%s]"
-                .formatted(id, order.id(), fromStatus, toStatus, changedBy == null ? "system" : changedBy.id());
+                .formatted(id, orderDescription, fromStatus, toStatus, changedByDescription);
     }
 }

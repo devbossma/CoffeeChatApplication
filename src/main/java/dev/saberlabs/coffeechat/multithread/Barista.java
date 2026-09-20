@@ -9,6 +9,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Pattern: PRODUCER-CONSUMER (Part 02) &mdash; the consumer.
@@ -29,6 +30,9 @@ public class Barista {
 
     private static final Logger log = LoggerFactory.getLogger(Barista.class);
 
+    /** How long an idle barista waits for an order before re-checking whether it has been told to stop. */
+    static final long POLL_TIMEOUT_MS = 200;
+
     private final OrderQueue orderQueue;
     private final CoffeeShopFacade facade;
     private volatile boolean running = true;
@@ -39,9 +43,11 @@ public class Barista {
     }
 
     /**
-     * Blocks on {@link OrderQueue#take()} and, for each dequeued order, prepares it via the
-     * facade. Runs until {@link #shutdown()} is called or the thread is interrupted (e.g. by the
-     * executor's shutdown, which interrupts blocked tasks &mdash; see {@code AsyncConfig}).
+     * Waits on {@link OrderQueue#poll} (a short timeout, not an indefinite {@code take()}) and, for
+     * each dequeued order, prepares it via the facade. Runs until {@link #shutdown()} is called or
+     * the thread is interrupted. The timed poll is what makes shutdown deterministic: an idle loop
+     * notices {@code running == false} within {@link #POLL_TIMEOUT_MS} on its own, without relying
+     * on anything interrupting a blocked thread.
      *
      * <p>A failure preparing one order (a bad state transition, a missing template, ...) is
      * logged and does not stop the loop &mdash; one bad order must not take an entire barista
@@ -54,10 +60,13 @@ public class Barista {
         while (running) {
             Order order;
             try {
-                order = orderQueue.take();
+                order = orderQueue.poll(POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
+            }
+            if (order == null) {
+                continue;
             }
             try {
                 facade.prepareOrder(order.id());
@@ -72,6 +81,11 @@ public class Barista {
     /** Signals the consumer loop to stop after its current wait/order completes. */
     public void shutdown() {
         running = false;
+    }
+
+    /** Re-arms the loop after {@link #shutdown()}, for a paused Spring context that is resumed. */
+    public void restart() {
+        running = true;
     }
 
     /** For tests/monitoring: whether {@link #shutdown()} has been called. */

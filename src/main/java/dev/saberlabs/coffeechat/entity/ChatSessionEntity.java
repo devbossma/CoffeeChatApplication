@@ -13,6 +13,7 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import jakarta.validation.constraints.NotNull;
+import org.hibernate.Hibernate;
 import org.jetbrains.annotations.Nullable;
 
 import java.time.Instant;
@@ -100,14 +101,25 @@ public class ChatSessionEntity {
         return o instanceof ChatSessionEntity other && id != null && id.equals(other.id());
     }
 
+    /** A constant, not {@code Objects.hashCode(id)} -- see {@code UserEntity.hashCode()}'s javadoc. */
     @Override
     public int hashCode() {
-        return Objects.hashCode(id);
+        return getClass().hashCode();
     }
 
+    /** Never dereferences {@link #customer}/{@link #barista} beyond a proxy-initialization check -- see {@code OrderEntity.toString()}'s javadoc. */
     @Override
     public String toString() {
+        String customerDescription = Hibernate.isInitialized(customer) ? String.valueOf(customer.id()) : "<lazy>";
+        String baristaDescription;
+        if (barista == null) {
+            baristaDescription = "null";
+        } else if (Hibernate.isInitialized(barista)) {
+            baristaDescription = String.valueOf(barista.id());
+        } else {
+            baristaDescription = "<lazy>";
+        }
         return "ChatSessionEntity[id=%s, customer=%s, barista=%s, status=%s]"
-                .formatted(id, customer.id(), barista == null ? null : barista.id(), status);
+                .formatted(id, customerDescription, baristaDescription, status);
     }
 }
