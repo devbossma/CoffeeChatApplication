@@ -2,6 +2,7 @@ package dev.saberlabs.coffeechat.repository;
 
 import dev.saberlabs.coffeechat.entity.OrderEntity;
 import dev.saberlabs.coffeechat.model.OrderStatus;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.List;
@@ -16,6 +17,10 @@ public interface OrderRepository extends JpaRepository<OrderEntity, Long> {
      */
     List<OrderEntity> findByStatusIn(List<OrderStatus> statuses);
 
-    /** Served by {@code idx_orders_customer_id}. */
+    /**
+     * Served by {@code idx_orders_customer_id}. The extras are fetched in the same query so mapping N
+     * orders to snapshots costs one statement, not N+1.
+     */
+    @EntityGraph(attributePaths = "extras")
     List<OrderEntity> findByCustomerId(Long customerId);
 }

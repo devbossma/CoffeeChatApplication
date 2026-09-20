@@ -34,7 +34,7 @@ public class OrderMapper {
                 .description();
         return new Order(
                 entity.id(),
-                entity.customer().id(),
+                entity.customerId(),
                 entity.baseCoffeeType(),
                 extras,
                 description,

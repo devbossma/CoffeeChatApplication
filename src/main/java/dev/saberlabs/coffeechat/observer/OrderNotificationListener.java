@@ -40,6 +40,11 @@ public class OrderNotificationListener {
                 .computeIfAbsent(event.orderId(), id -> new CopyOnWriteArrayList<>())
                 .add(message);
         log.info("[notification] customer {} — {}", event.customerId(), message);
+        if (event.to() == OrderStatus.FULFILLED || event.to() == OrderStatus.CANCELLED) {
+            // Terminal: the order can produce no further notifications. Dropping its entry keeps this
+            // debug aid bounded to in-flight orders instead of growing for the life of the process.
+            notificationsByOrder.remove(event.orderId());
+        }
     }
 
     /** Every notification raised for an order so far, oldest first. */

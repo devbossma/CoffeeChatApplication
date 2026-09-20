@@ -32,12 +32,16 @@ public class FulfillOrderCommand extends AbstractOrderCommand {
     public void execute() {
         transition(OrderStatus.FULFILLED);
         orders.flush();
-        users.incrementFulfilledOrders(orders.require(orderId).customer().id());
+        users.incrementFulfilledOrders(orders.require(orderId).customerId());
     }
 
+    /**
+     * Not supported: fulfilling also incremented the customer's {@code fulfilled_orders}, which
+     * feeds loyalty tiers. Restoring the status alone would let a re-fulfilment count twice.
+     */
     @Override
     public void undo() {
-        restore(OrderStatus.READY);
+        throw new UndoNotSupportedException("A fulfilment cannot be undone: it has already counted toward the customer's loyalty tier");
     }
 
     @Override

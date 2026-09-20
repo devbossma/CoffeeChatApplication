@@ -51,9 +51,14 @@ public class PlaceOrderCommand extends AbstractOrderCommand {
         events.publishStatusChange(order, null, actorUserId());
     }
 
+    /** Legal only while the order is still PLACED (then it is simply cancelled); anything later has moved on. */
     @Override
     public void undo() {
-        restore(OrderStatus.CANCELLED);
+        OrderStatus current = orders.require(orderId).status();
+        if (current != OrderStatus.PLACED) {
+            throw new UndoNotSupportedException("A placement can only be undone while the order is still PLACED (it is " + current + ")");
+        }
+        transition(OrderStatus.CANCELLED);
     }
 
     @Override

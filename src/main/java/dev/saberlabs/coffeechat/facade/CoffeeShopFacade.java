@@ -165,7 +165,12 @@ public class CoffeeShopFacade {
         return placeOrder(prototype.toPlaceOrderRequest());
     }
 
-    /** Undo the most recent lifecycle action, if any. */
+    /**
+     * Undo the most recent lifecycle action, if any. A limited convenience, not a general reversal:
+     * only a placement that is still PLACED, and a cancellation of a READY order, can be undone;
+     * anything whose reversal would have effects outside the order row (payment, loyalty count,
+     * preparation) throws {@code UndoNotSupportedException}.
+     */
     public void undoLastAction() {
         invoker.undoLast();
     }

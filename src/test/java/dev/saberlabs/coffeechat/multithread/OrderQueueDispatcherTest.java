@@ -50,6 +50,15 @@ class OrderQueueDispatcherTest {
         }
 
         @Test
+        @DisplayName("does not re-enqueue an order restored to PLACED from a later status (only a fresh placement is queued)")
+        void ignoresRestoreToPlaced() {
+            dispatcher.onOrderStatusChanged(new OrderStatusChangedEvent(
+                    42L, 7L, OrderStatus.READY, OrderStatus.PLACED, Instant.now()));
+
+            assertTrue(orderQueue.isEmpty());
+        }
+
+        @Test
         @DisplayName("does nothing for a non-PLACED transition")
         void ignoresOtherTransitions() {
             dispatcher.onOrderStatusChanged(new OrderStatusChangedEvent(

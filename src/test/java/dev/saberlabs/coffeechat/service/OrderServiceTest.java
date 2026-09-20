@@ -10,6 +10,9 @@ import dev.saberlabs.coffeechat.model.Order;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 import dev.saberlabs.coffeechat.model.PriceBreakdown;
 import dev.saberlabs.coffeechat.support.AbstractIntegrationTest;
+import jakarta.persistence.EntityManagerFactory;
+import org.hibernate.SessionFactory;
+import org.hibernate.stat.Statistics;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -33,6 +36,7 @@ class OrderServiceTest extends AbstractIntegrationTest {
 
     @Autowired OrderService service;
     @Autowired TransactionTemplate tx;
+    @Autowired EntityManagerFactory entityManagerFactory;
 
     private OrderEntity createInTx(UserEntity customer, List<ExtraType> extras) {
         return tx.execute(status -> service.create(customer, CoffeeType.LATTE, extras, LoyaltyTier.SILVER, PRICE));
@@ -170,6 +174,25 @@ class OrderServiceTest extends AbstractIntegrationTest {
         @DisplayName("is empty for a customer with no orders")
         void empty() {
             assertTrue(service.findByCustomer(customer("Alice").id()).isEmpty());
+        }
+
+        @Test
+        @DisplayName("maps many orders with ONE SQL statement: no per-order query for the customer proxy or the extras")
+        void oneStatementRegardlessOfOrderCount() {
+            UserEntity alice = customer("Alice");
+            for (int i = 0; i < 5; i++) {
+                createInTx(alice, List.of(ExtraType.MILK, ExtraType.SUGAR));
+            }
+            Statistics statistics = entityManagerFactory.unwrap(SessionFactory.class).getStatistics();
+            statistics.setStatisticsEnabled(true);
+            statistics.clear();
+
+            List<Order> snapshots = service.findByCustomer(alice.id());
+
+            assertEquals(5, snapshots.size());
+            assertEquals(List.of(ExtraType.MILK, ExtraType.SUGAR), snapshots.get(0).extras());
+            assertEquals(alice.id(), snapshots.get(0).customerId());
+            assertEquals(1, statistics.getPrepareStatementCount());
         }
     }
 

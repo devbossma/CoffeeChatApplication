@@ -38,7 +38,9 @@ public class OrderQueueDispatcher {
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onOrderStatusChanged(OrderStatusChangedEvent event) {
-        if (event.to() != OrderStatus.PLACED) {
+        // Only a FRESH placement (from == null) is queued. A restore back to PLACED (an undo) must not
+        // re-enqueue an order that has already been prepared.
+        if (event.from() != null || event.to() != OrderStatus.PLACED) {
             return;
         }
         orderQueue.enqueue(event.orderId());

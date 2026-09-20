@@ -52,7 +52,7 @@ public record OrderStatusChangedEvent(Long orderId,
         Objects.requireNonNull(order, "order cannot be null");
         return new OrderStatusChangedEvent(
                 order.id(),
-                order.customer().id(),
+                order.customerId(),
                 from,
                 order.status(),
                 Instant.now(),

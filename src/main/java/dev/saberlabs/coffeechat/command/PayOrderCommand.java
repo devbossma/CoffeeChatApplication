@@ -40,10 +40,10 @@ public class PayOrderCommand implements OrderCommand {
         }
     }
 
+    /** Not supported: there is no refund flow (PRD §4), and a payment cannot be quietly forgotten. */
     @Override
     public void undo() {
-        // No real processor to call; a refund would be issued here (see PRD §4).
-        result = null;
+        throw new UndoNotSupportedException("A payment cannot be undone: refunds are not modelled");
     }
 
     @Override

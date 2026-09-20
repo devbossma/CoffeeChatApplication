@@ -45,9 +45,13 @@ public class PrepareOrderCommand extends AbstractOrderCommand {
         transition(OrderStatus.READY);
     }
 
+    /**
+     * Not supported: returning a prepared order to PLACED would put a finished order back in front of
+     * the baristas' queue logic (and it is never re-queued), so it could be prepared twice or stranded.
+     */
     @Override
     public void undo() {
-        restore(OrderStatus.PLACED);
+        throw new UndoNotSupportedException("A prepared order cannot be returned to PLACED");
     }
 
     @Override

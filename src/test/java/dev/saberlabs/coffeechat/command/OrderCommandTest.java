@@ -105,6 +105,18 @@ class OrderCommandTest extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("undo() is rejected once the order has moved past PLACED (it would have effects outside the order)")
+        void undoRejectedAfterPreparation() {
+            PlaceOrderCommand command = place(customer.id());
+            invoker.executeCommand(command);
+            jdbc.update("UPDATE orders SET status = 'READY' WHERE id = ?", command.orderId());
+
+            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast());
+
+            assertEquals(OrderStatus.READY, statusOf(command.orderId()));
+        }
+
+        @Test
         @DisplayName("execute() rejects an unknown customer and persists nothing")
         void unknownCustomer() {
             assertThrows(CustomerNotFoundException.class, () -> invoker.executeCommand(place(9_999L)));
@@ -200,14 +212,14 @@ class OrderCommandTest extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("undo() sends the order back to PLACED")
-        void undo() {
+        @DisplayName("undo() is not supported: a prepared order is never sent back to PLACED")
+        void undoNotSupported() {
             Long id = orderAt(OrderStatus.PLACED);
             invoker.executeCommand(prepare(id));
 
-            invoker.undoLast();
+            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast());
 
-            assertEquals(OrderStatus.PLACED, statusOf(id));
+            assertEquals(OrderStatus.READY, statusOf(id));
         }
 
         @Test
@@ -263,13 +275,15 @@ class OrderCommandTest extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("undo() clears the stored result")
-        void undo() {
+        @DisplayName("undo() is not supported: refunds are not modelled")
+        void undoNotSupported() {
             Long id = orderAt(OrderStatus.READY);
             PayOrderCommand command = new PayOrderCommand(id, PaymentProvider.CASH, gateways, orderService);
             invoker.executeCommand(command);
-            invoker.undoLast();
-            assertNull(command.result());
+
+            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast());
+
+            assertTrue(command.result().isPaid(), "the payment result is untouched");
         }
 
         @Test
@@ -349,14 +363,16 @@ class OrderCommandTest extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("undo() reverts the status to READY (the count bump is not reversed)")
-        void undo() {
+        @DisplayName("undo() is not supported, so a fulfilment can never be re-done and counted twice")
+        void undoNotSupported() {
             Long id = orderAt(OrderStatus.READY);
             invoker.executeCommand(fulfill(id));
 
-            invoker.undoLast();
+            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast());
 
-            assertEquals(OrderStatus.READY, statusOf(id));
+            assertEquals(OrderStatus.FULFILLED, statusOf(id));
+            assertEquals(1, fulfilledOrdersOf(customer.id()));
+            assertThrows(IllegalStateException.class, () -> invoker.executeCommand(fulfill(id)));
             assertEquals(1, fulfilledOrdersOf(customer.id()));
         }
 
@@ -396,7 +412,18 @@ class OrderCommandTest extends AbstractIntegrationTest {
         }
 
         @Test
-        @DisplayName("undo() restores the status the order held before cancellation")
+        @DisplayName("undo() of cancelling a PLACED order is not supported (it would never be queued again)")
+        void undoNotSupportedFromPlaced() {
+            Long id = orderAt(OrderStatus.PLACED);
+            invoker.executeCommand(new CancelOrderCommand(id, orderService, events));
+
+            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast());
+
+            assertEquals(OrderStatus.CANCELLED, statusOf(id));
+        }
+
+        @Test
+        @DisplayName("undo() restores the status the order held before cancellation (READY)")
         void undo() {
             Long id = orderAt(OrderStatus.READY);
             invoker.executeCommand(new CancelOrderCommand(id, orderService, events));

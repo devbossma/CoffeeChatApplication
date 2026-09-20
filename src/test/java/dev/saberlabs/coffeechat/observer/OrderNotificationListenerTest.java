@@ -60,18 +60,46 @@ class OrderNotificationListenerTest {
         @DisplayName("keeps different orders' notifications separate")
         void separatesOrders() {
             listener.onOrderStatusChanged(event(1L, OrderStatus.PLACED));
-            listener.onOrderStatusChanged(event(2L, OrderStatus.CANCELLED));
+            listener.onOrderStatusChanged(event(2L, OrderStatus.READY));
             assertTrue(listener.latestFor(1L).contains("placed"));
-            assertTrue(listener.latestFor(2L).contains("cancelled"));
+            assertTrue(listener.latestFor(2L).contains("ready"));
         }
 
         @Test
-        @DisplayName("covers every status with a distinct message")
+        @DisplayName("covers every status with a message (none throws)")
         void everyStatusMapped() {
             for (OrderStatus status : OrderStatus.values()) {
                 listener.onOrderStatusChanged(event(99L, status));
             }
-            assertEquals(OrderStatus.values().length, listener.notificationsFor(99L).size());
+        }
+
+        @Test
+        @DisplayName("drops an order's entry when it reaches FULFILLED, so the map stays bounded to in-flight orders")
+        void dropsOnFulfilled() {
+            listener.onOrderStatusChanged(event(5L, OrderStatus.PLACED));
+            listener.onOrderStatusChanged(event(5L, OrderStatus.READY));
+            assertEquals(2, listener.notificationsFor(5L).size());
+
+            listener.onOrderStatusChanged(event(5L, OrderStatus.FULFILLED));
+
+            assertTrue(listener.notificationsFor(5L).isEmpty());
+        }
+
+        @Test
+        @DisplayName("drops an order's entry when it reaches CANCELLED")
+        void dropsOnCancelled() {
+            listener.onOrderStatusChanged(event(6L, OrderStatus.PLACED));
+            listener.onOrderStatusChanged(event(6L, OrderStatus.CANCELLED));
+            assertTrue(listener.notificationsFor(6L).isEmpty());
+        }
+
+        @Test
+        @DisplayName("keeps the entry of an order that is still in flight, and other orders' entries")
+        void keepsInFlight() {
+            listener.onOrderStatusChanged(event(7L, OrderStatus.PLACED));
+            listener.onOrderStatusChanged(event(8L, OrderStatus.PLACED));
+            listener.onOrderStatusChanged(event(8L, OrderStatus.CANCELLED));
+            assertEquals(1, listener.notificationsFor(7L).size());
         }
     }
 

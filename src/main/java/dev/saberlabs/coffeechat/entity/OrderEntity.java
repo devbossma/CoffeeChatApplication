@@ -66,6 +66,14 @@ public class OrderEntity {
     @Column(name = "base_coffee_type", nullable = false, length = 20)
     private CoffeeType baseCoffeeType;
 
+    /**
+     * The same {@code customer_id} column as {@link #customer}, mapped read-only so the customer's id
+     * can be read without initialising the lazy {@code customer} proxy (which costs one query per order
+     * when a list of orders is mapped).
+     */
+    @Column(name = "customer_id", insertable = false, updatable = false)
+    private Long customerId;
+
     @ElementCollection(fetch = FetchType.LAZY)
     @CollectionTable(name = "order_extras", joinColumns = @JoinColumn(name = "order_id"))
     @OrderColumn(name = "extra_index")
@@ -116,6 +124,7 @@ public class OrderEntity {
                        @NotNull Instant placedAt,
                        @NotNull Instant updatedAt) {
         this.customer = Objects.requireNonNull(customer, "customer cannot be null");
+        this.customerId = customer.id();
         this.baseCoffeeType = Objects.requireNonNull(baseCoffeeType, "baseCoffeeType cannot be null");
         this.extras = new ArrayList<>(Objects.requireNonNull(extras, "extras cannot be null"));
         this.status = Objects.requireNonNull(status, "status cannot be null");
@@ -135,6 +144,11 @@ public class OrderEntity {
 
     public UserEntity customer() {
         return customer;
+    }
+
+    /** The customer's id, read without touching the lazy {@link #customer()} proxy. */
+    public Long customerId() {
+        return customerId;
     }
 
     public CoffeeType baseCoffeeType() {

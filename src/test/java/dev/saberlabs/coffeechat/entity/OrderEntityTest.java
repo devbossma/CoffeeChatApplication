@@ -157,6 +157,25 @@ class OrderEntityTest {
     }
 
     @Nested
+    @DisplayName("customerId()")
+    class CustomerIdTests {
+
+        @Test
+        @DisplayName("is the customer's id, readable without touching the customer association")
+        void readsCustomerId() throws Exception {
+            UserEntity withId = new UserEntity("Alice", Role.CUSTOMER);
+            java.lang.reflect.Field field = UserEntity.class.getDeclaredField("id");
+            field.setAccessible(true);
+            field.set(withId, 12L);
+
+            OrderEntity order = new OrderEntity(withId, CoffeeType.ESPRESSO, List.of(), OrderStatus.PLACED,
+                    LoyaltyTier.REGULAR, PRICE, NOW, NOW);
+
+            assertEquals(12L, order.customerId());
+        }
+    }
+
+    @Nested
     @DisplayName("transitionTo()")
     class TransitionToTests {
 

@@ -155,6 +155,15 @@ class OrderControllerTest {
         }
 
         @Test
+        @DisplayName("409 when an undo is not supported")
+        void undoNotSupported() throws Exception {
+            when(facade.reorder(1L)).thenThrow(new dev.saberlabs.coffeechat.command.UndoNotSupportedException("no"));
+
+            mvc.perform(post("/api/orders/1/reorder"))
+                    .andExpect(status().isConflict());
+        }
+
+        @Test
         @DisplayName("201 with the cloned order body")
         void reordered() throws Exception {
             Order clone = sampleOrder(2L);

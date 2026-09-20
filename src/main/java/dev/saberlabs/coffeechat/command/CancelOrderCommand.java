@@ -23,8 +23,15 @@ public class CancelOrderCommand extends AbstractOrderCommand {
         transition(OrderStatus.CANCELLED);
     }
 
+    /**
+     * Restores the status held before the cancellation, except PLACED: a restored PLACED order is
+     * never re-queued (only a fresh placement is), so it would be stranded.
+     */
     @Override
     public void undo() {
+        if (previousStatus == OrderStatus.PLACED) {
+            throw new UndoNotSupportedException("A cancelled PLACED order cannot be restored: it would never be queued again");
+        }
         restore(previousStatus);
     }
 
