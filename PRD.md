@@ -152,20 +152,30 @@ SQLite.
 
 ### 9.2 Entities
 
-| Entity | Carries forward from | Notes |
-|---|---|---|
-| `ChatSessionEntity` | `chat.ChatSession` (record) | `id`, `customerId`, `baristaId` (nullable), `status` (`WAITING`/`ACTIVE`/`INACTIVE`), `createdAt`. Becomes a real `@Entity` with a generated id instead of a record built by a factory method. |
-| `ChatMessageEntity` | `chat.ChatMessage` (record) | `id`, `type` (`CHAT_MESSAGE`/`SYSTEM_MESSAGE`), `sessionId` (FK), `senderId`, `senderName`, `content`, `timestamp`, `orderId` (nullable). |
-| `OrderEntity` | `models.Order` | Persisted instead of held only in `CoffeeShop`'s in-memory list; `status`, `customer` (FK, not bare id), base coffee type, applied extras (own table/`@ElementCollection`, not a flattened string), price breakdown, `appliedLoyaltyTier` (frozen at placement, never recomputed against the customer's current tier), timestamps. |
-| `CustomerEntity` | `models.Customer` | `id`, `name`, `fulfilledOrders` count — no separate `loyaltyTier` column; tier is derived at read time (`LoyaltyTier.forCount(...)`) so it can't drift from the count. |
-| `UserEntity` *(new)* | — | `id`, `name`, `role` (`CUSTOMER`/`BARISTA`/`MANAGER`). Backs `ChatSessionEntity.baristaId`, which had nothing to reference before. |
-| `PaymentEntity` *(new)* | `adapter/` (Adapter pattern) | 1:1 with `OrderEntity`: gateway used, amount, status (`PENDING`/`PAID`/`FAILED`). Without this the Pay command step has no persisted trace. |
-| `OrderStatusHistoryEntity` *(new)* | — | `orderId`, `fromStatus`, `toStatus`, `changedAt`. The durable audit trail; `OrderInvoker`'s in-memory command history is a recent-activity/undo aid, not this. |
+`CustomerEntity` and `UserEntity` were designed as one merged table, not two — a customer
+placing an order and a barista fulfilling one are both just people with a role, and splitting
+them would have meant `ChatSessionEntity.baristaId`/`customerId` pointing at two different
+tables for what is structurally the same fact. Seven tables, seven entities:
 
-`ChatMessageEntity.sessionId` and `OrderEntity.customerId` are real `@ManyToOne` associations,
-not bare `Long` columns. Indices: `chat_message(session_id, timestamp)` (ordered history load),
-`order_entity(customer_id)` (per-customer queries). Full rationale for all of the above:
-`CLAUDE.md` → "Schema additions needed before Part 03".
+| Entity (table) | Carries forward from | Notes |
+|---|---|---|
+| `UserEntity` (`user_accounts`) | `models.Customer` + *(new)* | The one identity table for every person — customer, barista, or manager — distinguished by `role` (`CUSTOMER`/`BARISTA`/`MANAGER`). `id`, `name`, `role`, `fulfilledOrders` (meaningful for `CUSTOMER` rows only; mutated exclusively via `UserRepository.incrementFulfilledOrders`, an atomic `UPDATE ... SET fulfilled_orders = fulfilled_orders + 1`, not read-modify-write — no `@Version` needed here). No separate `loyaltyTier` column; tier is derived at read time (`LoyaltyTier.forCount(...)`) so it can't drift from the count. Backs `ChatSessionEntity.customerId`/`baristaId` and `OrderEntity.customerId`, none of which had a real entity to reference before Part 03. |
+| `OrderEntity` (`orders`) | `models.Order` | Persisted instead of held only in `CoffeeShop`'s in-memory list. `customer` (`@ManyToOne`, not a bare id), `baseCoffeeType`, `extras` (`@ElementCollection` + `@OrderColumn` — a `List`, not a `Set`: duplicate extras are meaningful and order must survive for Prototype reorder), `status`, `appliedLoyaltyTier` (frozen at placement, never recomputed against the customer's current tier), a four-column price breakdown (`price_base`/`price_extras`/`price_discount`/`price_total`, built directly from `PriceBreakdown` so its own invariant — `base + extras - discount = total` at scale 2 HALF_UP — can never violate the DB's `chk_order_price_consistent` CHECK), `placedAt`/`updatedAt`, and `@Version version` for optimistic locking (the only entity that needs it: async barista threads and REST requests can touch the same order row concurrently). |
+| `order_extras` (no separate entity) | — | The backing table for `OrderEntity.extras`'s `@ElementCollection`; composite PK `(order_id, extra_index)`, `ON DELETE CASCADE`. |
+| `PaymentEntity` (`payments`) | `adapter/` (Adapter pattern) | 1:1 with `OrderEntity` (`UNIQUE(order_id)`, owned by this entity — `OrderEntity` carries no inverse side). Gateway used, amount, status (`PENDING`/`PAID`/`FAILED`), optional `detail`. Inserted once, after the gateway responds, with a terminal status already known — never written `PENDING` first and updated later. |
+| `OrderStatusHistoryEntity` (`order_status_history`) | — | The durable audit trail, written by one dedicated `OrderStatusChangedEvent` listener. `order` (FK), nullable `fromStatus` (null for an order's first, `PLACED` row), `toStatus`, `changedAt`, and a nullable `changedBy` (`UserEntity` FK) — null for an automated/system transition, set for a barista-attributed one. A plain FK can't check the referenced row's role, so BARISTA-only enforcement on `changedBy` is an application-layer rule (Part 03 Step 4), not a DB constraint. `OrderInvoker`'s in-memory command history stays a lightweight recent-activity/undo aid, never this. |
+| `ChatSessionEntity` (`chat_sessions`) | `chat.ChatSession` (record) | `customer` (FK, not nullable), `barista` (FK, nullable until matched), `status` (`WAITING`/`ACTIVE`/`INACTIVE`), `createdAt`. A partial unique index (`customer_id` where `status <> 'INACTIVE'`) enforces at most one non-`INACTIVE` session per customer at the DB level, alongside the equivalent app-level check in `ChatService.startChat()`. |
+| `ChatMessageEntity` (`chat_messages`) | `chat.ChatMessage` (record) | `session` (FK), `type` (`CHAT_MESSAGE`/`SYSTEM_MESSAGE`), nullable `sender` (FK — null for a `SYSTEM_MESSAGE`), `senderName` (kept as its own persisted column even though derivable from `sender`, since a later display-name change shouldn't rewrite what an old message shows), `content` (capped at 2000 chars via `chk_chat_message_content_length`, matched by a `@Size(max = 2000)` on the Part 03 Step 6 REST DTO), `sentAt`, nullable `order` (FK). |
+
+Every FK above is a real `@ManyToOne`/`@OneToOne` association (`fetch = LAZY, optional = false`
+where the relationship is mandatory), not a bare `Long` column. Indices beyond each table's PK:
+`orders(customer_id)`, `orders(status)` (restart-recovery: re-finding in-flight orders),
+`order_status_history(order_id, changed_at)`, `chat_sessions(customer_id)`,
+`chat_sessions(status)`, `chat_messages(session_id, sent_at)` (ordered history load). Full
+rationale for all of the above, including every constraint and index decision:
+`CLAUDE.md` → "Schema additions needed before Part 03"; the full DDL lives in
+`src/main/resources/db/migration/V1__init_schema.sql`, the schema's single source of truth
+(`spring.jpa.hibernate.ddl-auto=validate`, not `update`).
 
 Repositories are plain Spring Data JPA interfaces
 (`ChatMessageRepository extends JpaRepository<ChatMessageEntity, Long>`,
