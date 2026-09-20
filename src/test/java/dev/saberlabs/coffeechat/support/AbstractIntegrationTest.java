@@ -16,6 +16,7 @@ import dev.saberlabs.coffeechat.strategy.PricingStrategyResolver;
 import dev.saberlabs.coffeechat.template.CoffeePreparationResolver;
 import dev.saberlabs.coffeechat.entity.UserEntity;
 import dev.saberlabs.coffeechat.model.Role;
+import dev.saberlabs.coffeechat.chat.BaristaQueue;
 import dev.saberlabs.coffeechat.multithread.BaristaSupervisor;
 import dev.saberlabs.coffeechat.multithread.OrderQueue;
 import dev.saberlabs.coffeechat.observer.OrderNotificationListener;
@@ -63,6 +64,7 @@ public abstract class AbstractIntegrationTest extends SharedPostgresContainer {
     @Autowired protected ChatMessageRepository chatMessages;
     @Autowired protected ChatSessionRepository chatSessions;
     @Autowired protected OrderQueue orderQueue;
+    @Autowired protected BaristaQueue baristaQueue;
     @Autowired protected OrderNotificationListener notifications;
     @Autowired protected CoffeeShop coffeeShop;
     @Autowired protected JdbcTemplate jdbc;
@@ -137,6 +139,7 @@ public abstract class AbstractIntegrationTest extends SharedPostgresContainer {
             // drain ids left behind by the test
         }
         notifications.clear();
+        baristaQueue.clear();
         coffeeShop.reset();
     }
 
