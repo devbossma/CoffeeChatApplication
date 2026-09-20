@@ -1,8 +1,8 @@
 package dev.saberlabs.coffeechat.observer;
 
-import dev.saberlabs.coffeechat.model.Order;
+import dev.saberlabs.coffeechat.entity.OrderEntity;
 import dev.saberlabs.coffeechat.model.OrderStatus;
-import dev.saberlabs.coffeechat.support.TestOrders;
+import dev.saberlabs.coffeechat.support.TestEntities;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -30,7 +30,7 @@ class OrderEventPublisherTest {
         @DisplayName("publishes an OrderStatusChangedEvent carrying the from/to and ids")
         void publishesEvent() {
             OrderEventPublisher publisher = new OrderEventPublisher(springPublisher);
-            Order order = TestOrders.placedEspresso(11L, TestOrders.customer(3L));
+            OrderEntity order = TestEntities.placedEspresso(11L, TestEntities.customer(3L));
             order.transitionTo(OrderStatus.PREPARING);
 
             publisher.publishStatusChange(order, OrderStatus.PLACED);

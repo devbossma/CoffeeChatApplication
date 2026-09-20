@@ -10,14 +10,15 @@ import dev.saberlabs.coffeechat.command.PayOrderCommand;
 import dev.saberlabs.coffeechat.command.PlaceOrderCommand;
 import dev.saberlabs.coffeechat.command.PrepareOrderCommand;
 import dev.saberlabs.coffeechat.decorator.CoffeeDecorators;
+import dev.saberlabs.coffeechat.entity.UserEntity;
 import dev.saberlabs.coffeechat.factory.CoffeeFactory;
 import dev.saberlabs.coffeechat.model.Coffee;
-import dev.saberlabs.coffeechat.model.Customer;
 import dev.saberlabs.coffeechat.model.LoyaltyTier;
 import dev.saberlabs.coffeechat.model.Order;
 import dev.saberlabs.coffeechat.model.PriceBreakdown;
 import dev.saberlabs.coffeechat.observer.OrderEventPublisher;
 import dev.saberlabs.coffeechat.prototype.OrderPrototype;
+import dev.saberlabs.coffeechat.repository.UserRepository;
 import dev.saberlabs.coffeechat.service.CustomerService;
 import dev.saberlabs.coffeechat.service.OrderService;
 import dev.saberlabs.coffeechat.singleton.CoffeeShop;
@@ -30,16 +31,13 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 
 /**
- * Pattern 8: FACADE.
+ * Pattern 8: FACADE &mdash; the only door into the order lifecycle ({@code CLAUDE.md}). Every
+ * lifecycle transition, from every entry point (REST, chat, the async barista), goes through here;
+ * this is the only class that builds {@code Command}s and calls {@code OrderInvoker}.
  *
- * <p>The single door into the order lifecycle. Controllers (and, later, {@code ChatService} and
- * the async Barista) call <em>only</em> this class &mdash; never {@code OrderService},
- * {@code OrderInvoker} or a {@code Command} directly. It is the only class that builds
- * {@code Command} objects and hands them to {@link OrderInvoker} ({@code CLAUDE.md}).
- *
- * <p>{@link #placeOrder} coordinates the other patterns: Singleton (is the shop open? on menu?),
- * Factory Method (base coffee), Decorator (extras), Strategy (tier price), Command (the
- * PlaceOrderCommand), Observer (the event the command publishes).
+ * <p>The facade methods are deliberately <em>not</em> transactional: each command runs in exactly
+ * one transaction opened by {@link OrderInvoker}, which is also what lets the barista thread (no
+ * ambient transaction) call in safely.
  */
 @Service
 public class CoffeeShopFacade {
@@ -51,6 +49,7 @@ public class CoffeeShopFacade {
     private final PaymentGatewayResolver gateways;
     private final OrderService orders;
     private final CustomerService customers;
+    private final UserRepository users;
     private final OrderEventPublisher events;
     private final OrderInvoker invoker;
     private final ObjectProvider<OrderPrototype> orderPrototypeProvider;
@@ -62,6 +61,7 @@ public class CoffeeShopFacade {
                             PaymentGatewayResolver gateways,
                             OrderService orders,
                             CustomerService customers,
+                            UserRepository users,
                             OrderEventPublisher events,
                             OrderInvoker invoker,
                             ObjectProvider<OrderPrototype> orderPrototypeProvider) {
@@ -72,18 +72,20 @@ public class CoffeeShopFacade {
         this.gateways = gateways;
         this.orders = orders;
         this.customers = customers;
+        this.users = users;
         this.events = events;
         this.invoker = invoker;
         this.orderPrototypeProvider = orderPrototypeProvider;
     }
 
     /**
-     * Places a new order: validates the shop is open and the coffee is on the menu, builds the
-     * (decorated, tier-priced) order, and runs it through {@link PlaceOrderCommand}.
+     * Places a new order: validates the shop is open and the coffee is on the menu, derives the
+     * customer's <em>current</em> loyalty tier from {@code fulfilled_orders} (frozen into the order
+     * from here on), prices it, and runs {@link PlaceOrderCommand}.
      *
      * @throws ShopClosedException       if the shop is not accepting orders
      * @throws CoffeeNotOnMenuException  if the requested type is off the menu
-     * @throws CustomerNotFoundException if {@code request.customerId()} is unknown
+     * @throws CustomerNotFoundException if {@code request.customerId()} is not a CUSTOMER user
      */
     public Order placeOrder(PlaceOrderRequest request) {
         if (!coffeeShop.isOpen()) {
@@ -92,24 +94,23 @@ public class CoffeeShopFacade {
         if (!coffeeShop.isOnMenu(request.type())) {
             throw new CoffeeNotOnMenuException(request.type());
         }
-        Customer customer = customers.findById(request.customerId())
+        UserEntity customer = customers.findById(request.customerId())
                 .orElseThrow(() -> new CustomerNotFoundException(request.customerId()));
 
         Coffee base = coffeeFactory.create(request.type());
         Coffee decorated = CoffeeDecorators.decorate(base, request.extras());
-
         LoyaltyTier tier = customer.loyaltyTier();
         PricingStrategy strategy = pricing.forTier(tier);
-
         BigDecimal fullCost = decorated.cost();
         BigDecimal extrasTotal = fullCost.subtract(base.cost());
         BigDecimal discount = strategy.discountAmount(fullCost);
         BigDecimal total = strategy.priceFor(fullCost);
         PriceBreakdown price = new PriceBreakdown(base.cost(), extrasTotal, discount, total);
 
-        Order order = new Order(customer, decorated, request.type(), request.extras(), price, tier);
-        invoker.executeCommand(new PlaceOrderCommand(order, orders, events));
-        return order;
+        PlaceOrderCommand command = new PlaceOrderCommand(
+                request.customerId(), request.type(), request.extras(), tier, price, customers, orders, events);
+        invoker.executeCommand(command);
+        return getOrder(command.orderId());
     }
 
     /** @throws OrderNotFoundException if no order has that id. */
@@ -119,34 +120,28 @@ public class CoffeeShopFacade {
 
     /** Prepare an order: Template Method recipe, then {@code PLACED -> READY}. */
     public void prepareOrder(Long orderId) {
-        Order order = getOrder(orderId);
-        invoker.executeCommand(new PrepareOrderCommand(order, orders, events, preparations));
+        invoker.executeCommand(new PrepareOrderCommand(orderId, orders, events, preparations));
     }
 
     /** Collect payment for an order through {@code provider}'s Adapter. */
     public PaymentResult payOrder(Long orderId, PaymentProvider provider) {
-        Order order = getOrder(orderId);
-        PayOrderCommand command = new PayOrderCommand(order, provider, gateways);
+        PayOrderCommand command = new PayOrderCommand(orderId, provider, gateways, orders);
         invoker.executeCommand(command);
         return command.result();
     }
 
     /** Fulfil an order: {@code READY -> FULFILLED} and bump the customer's fulfilled count. */
     public void fulfillOrder(Long orderId) {
-        Order order = getOrder(orderId);
-        invoker.executeCommand(new FulfillOrderCommand(order, orders, events, customers));
+        invoker.executeCommand(new FulfillOrderCommand(orderId, orders, events, users));
     }
 
     /** Cancel an in-progress order. */
     public void cancelOrder(Long orderId) {
-        Order order = getOrder(orderId);
-        invoker.executeCommand(new CancelOrderCommand(order, orders, events));
+        invoker.executeCommand(new CancelOrderCommand(orderId, orders, events));
     }
 
     /**
-     * Run an order through the rest of its lifecycle synchronously: prepare, pay, fulfil. This
-     * is {@code MyDesignPattern}'s {@code processOrder}; Part 02 replaces it with the async
-     * Barista pipeline.
+     * Run an order through the rest of its lifecycle synchronously: prepare, pay, fulfil.
      */
     public Order processOrder(Long orderId, PaymentProvider provider) {
         prepareOrder(orderId);
@@ -156,9 +151,9 @@ public class CoffeeShopFacade {
     }
 
     /**
-     * Re-order an existing order (Pattern 9: PROTOTYPE). Fetches a fresh prototype-scoped
-     * {@link OrderPrototype}, seeds it from the original's structure (base coffee + extras +
-     * customer, never id/status/timestamps), and re-places it &mdash; ending in
+     * Re-order an existing order (Pattern 9: PROTOTYPE). Reads the persisted order (base coffee and
+     * its ordered extras list), seeds a fresh prototype-scoped {@link OrderPrototype} from that
+     * snapshot &mdash; never id/status/timestamps/price/tier &mdash; and re-places it, ending in
      * {@link #placeOrder(PlaceOrderRequest)}, not a separate path.
      *
      * @throws OrderNotFoundException if {@code orderId} is unknown

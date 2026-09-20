@@ -157,6 +157,83 @@ class OrderEntityTest {
     }
 
     @Nested
+    @DisplayName("transitionTo()")
+    class TransitionToTests {
+
+        @Test
+        @DisplayName("walks the full happy-path lifecycle and refreshes updatedAt")
+        void happyPath() {
+            OrderEntity order = newOrder();
+            Instant before = order.updatedAt();
+
+            order.transitionTo(OrderStatus.PREPARING);
+            order.transitionTo(OrderStatus.READY);
+            order.transitionTo(OrderStatus.FULFILLED);
+
+            assertEquals(OrderStatus.FULFILLED, order.status());
+            assertTrue(!order.updatedAt().isBefore(before));
+        }
+
+        @Test
+        @DisplayName("PLACED, PREPARING and READY can each be cancelled")
+        void cancellable() {
+            for (OrderStatus from : List.of(OrderStatus.PLACED, OrderStatus.PREPARING, OrderStatus.READY)) {
+                OrderEntity order = newOrder();
+                order.restoreStatus(from);
+                order.transitionTo(OrderStatus.CANCELLED);
+                assertEquals(OrderStatus.CANCELLED, order.status());
+            }
+        }
+
+        @Test
+        @DisplayName("rejects an illegal jump")
+        void rejectsIllegalJump() {
+            OrderEntity order = newOrder();
+            assertThrows(IllegalStateException.class, () -> order.transitionTo(OrderStatus.READY));
+            assertEquals(OrderStatus.PLACED, order.status());
+        }
+
+        @Test
+        @DisplayName("rejects a transition out of a terminal state")
+        void rejectsMoveFromTerminal() {
+            OrderEntity order = newOrder();
+            order.transitionTo(OrderStatus.CANCELLED);
+            assertThrows(IllegalStateException.class, () -> order.transitionTo(OrderStatus.PREPARING));
+        }
+
+        @Test
+        @DisplayName("rejects a null target")
+        void rejectsNullTarget() {
+            OrderEntity order = newOrder();
+            assertThrows(NullPointerException.class, () -> order.transitionTo(null));
+        }
+    }
+
+    @Nested
+    @DisplayName("restoreStatus()")
+    class RestoreStatusTests {
+
+        @Test
+        @DisplayName("forces a backwards status the transition guard would reject")
+        void forcesBackwards() {
+            OrderEntity order = newOrder();
+            order.transitionTo(OrderStatus.PREPARING);
+            assertThrows(IllegalStateException.class, () -> order.transitionTo(OrderStatus.PLACED));
+
+            order.restoreStatus(OrderStatus.PLACED);
+
+            assertEquals(OrderStatus.PLACED, order.status());
+        }
+
+        @Test
+        @DisplayName("rejects a null target")
+        void rejectsNull() {
+            OrderEntity order = newOrder();
+            assertThrows(NullPointerException.class, () -> order.restoreStatus(null));
+        }
+    }
+
+    @Nested
     @DisplayName("equals()")
     class EqualsTests {
 

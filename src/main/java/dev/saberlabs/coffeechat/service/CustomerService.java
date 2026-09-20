@@ -1,60 +1,53 @@
 package dev.saberlabs.coffeechat.service;
 
-import dev.saberlabs.coffeechat.model.Customer;
+import dev.saberlabs.coffeechat.entity.UserEntity;
+import dev.saberlabs.coffeechat.facade.CustomerNotFoundException;
+import dev.saberlabs.coffeechat.model.Role;
+import dev.saberlabs.coffeechat.repository.UserRepository;
+import jakarta.validation.constraints.NotNull;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
-import java.util.NoSuchElementException;
+import java.util.Objects;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * In-memory store of customers.
- *
- * <p><strong>Part 01 stand-in for a Part 03 Spring Data JPA {@code CustomerRepository}.</strong>
- * Same rationale as {@link OrderService}.
+ * Customer operations over {@link UserRepository}. A "customer" is a {@code UserEntity} whose role
+ * is {@code CUSTOMER}; a barista or manager id is never a customer, so it looks up as not found.
+ * Loyalty tier is derived ({@code UserEntity.loyaltyTier()}), never stored, and
+ * {@code fulfilledOrders} is only ever changed by {@code UserRepository.incrementFulfilledOrders}.
  */
 @Service
 public class CustomerService {
 
-    private final ConcurrentMap<Long, Customer> customers = new ConcurrentHashMap<>();
-    private final AtomicLong sequence = new AtomicLong(0);
+    private final UserRepository users;
 
-    /**
-     * Creates and stores a new customer with 0 fulfilled orders.
-     *
-     * @throws IllegalArgumentException if {@code name} is blank (from the {@link Customer} constructor)
-     */
-    public Customer create(String name) {
-        Customer customer = new Customer(name);
-        customer.assignId(sequence.incrementAndGet());
-        customers.put(customer.id(), customer);
-        return customer;
-    }
-
-    public Optional<Customer> findById(Long id) {
-        return Optional.ofNullable(customers.get(id));
+    public CustomerService(@NotNull UserRepository users) {
+        this.users = Objects.requireNonNull(users, "users cannot be null");
     }
 
     /**
-     * Records one more fulfilled order for the customer (Strategy: may raise the derived tier).
-     *
-     * @return the updated customer
-     * @throws NoSuchElementException if no customer has that id
+     * @throws IllegalArgumentException if {@code name} is blank (from the {@link UserEntity} constructor)
      */
-    public Customer incrementFulfilled(Long id) {
-        Customer customer = customers.get(id);
-        if (customer == null) {
-            throw new NoSuchElementException("No customer with id " + id);
-        }
-        customer.incrementFulfilled();
-        return customer;
+    @Transactional
+    public UserEntity create(@NotNull String name) {
+        return users.save(new UserEntity(name, Role.CUSTOMER));
     }
 
-    /** Test/reset aid. */
-    public void clear() {
-        customers.clear();
-        sequence.set(0);
+    @Transactional(readOnly = true)
+    public Optional<UserEntity> findById(@NotNull Long id) {
+        Objects.requireNonNull(id, "id cannot be null");
+        return users.findById(id).filter(u -> u.role() == Role.CUSTOMER);
+    }
+
+    /**
+     * Loads the customer inside the calling command's transaction.
+     *
+     * @throws CustomerNotFoundException if no CUSTOMER user has that id
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public UserEntity require(@NotNull Long id) {
+        return findById(id).orElseThrow(() -> new CustomerNotFoundException(id));
     }
 }

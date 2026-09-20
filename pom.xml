@@ -103,6 +103,14 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- Part 03 Step 3: bounded waiting for the async barista pipeline in integration tests,
+             instead of fixed sleeps. Version managed by the parent BOM. -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Part 03: the @DataJpaTest slice. Same Spring Boot 4 module split as webmvc-test
              above; verified via `mvn dependency:resolve` before adding, not assumed. -->
         <dependency>

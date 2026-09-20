@@ -3,7 +3,8 @@ package dev.saberlabs.coffeechat.observer;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.event.EventListener;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -27,7 +28,12 @@ public class OrderNotificationListener {
 
     private final Map<Long, List<String>> notificationsByOrder = new ConcurrentHashMap<>();
 
-    @EventListener
+    /**
+     * AFTER_COMMIT: a customer must never be told about a transition that rolled back. Runs after
+     * the transaction has ended, so do not touch the database here (it would need its own
+     * {@code REQUIRES_NEW} transaction); this listener only appends to an in-memory list.
+     */
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onOrderStatusChanged(OrderStatusChangedEvent event) {
         String message = messageFor(event.orderId(), event.to());
         notificationsByOrder

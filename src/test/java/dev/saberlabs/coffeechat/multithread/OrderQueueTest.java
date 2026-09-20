@@ -1,7 +1,5 @@
 package dev.saberlabs.coffeechat.multithread;
 
-import dev.saberlabs.coffeechat.model.Order;
-import dev.saberlabs.coffeechat.support.TestOrders;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -21,8 +19,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("OrderQueue")
 class OrderQueueTest {
 
-    private static Order order(long id) {
-        return TestOrders.placedEspresso(id, TestOrders.customer(id));
+    /** The queue carries order ids, so a "queued order" in these tests is just its id. */
+    private static Long order(long id) {
+        return id;
     }
 
     @Nested
@@ -59,14 +58,14 @@ class OrderQueueTest {
         @DisplayName("adds an order that take() then returns")
         void addsOrder() throws InterruptedException {
             OrderQueue queue = new OrderQueue(3);
-            Order order = order(1L);
+            Long order = order(1L);
             queue.enqueue(order);
             assertEquals(1, queue.size());
-            assertSame(order, queue.take());
+            assertEquals(order, queue.take());
         }
 
         @Test
-        @DisplayName("rejects a null order")
+        @DisplayName("rejects a null order id")
         void rejectsNull() {
             OrderQueue queue = new OrderQueue(3);
             assertThrows(NullPointerException.class, () -> queue.enqueue(null));
@@ -127,7 +126,7 @@ class OrderQueueTest {
         @DisplayName("blocks the caller until an order is enqueued, then returns it")
         void blocksUntilAvailable() throws InterruptedException {
             OrderQueue queue = new OrderQueue(3);
-            AtomicReference<Order> received = new AtomicReference<>();
+            AtomicReference<Long> received = new AtomicReference<>();
             Thread consumer = new Thread(() -> {
                 try {
                     received.set(queue.take());
@@ -140,11 +139,11 @@ class OrderQueueTest {
             Thread.sleep(150);
             assertNull(received.get());
 
-            Order order = order(1L);
+            Long order = order(1L);
             queue.enqueue(order);
             consumer.join(2000);
 
-            assertSame(order, received.get());
+            assertEquals(order, received.get());
         }
 
         @Test
@@ -169,6 +168,92 @@ class OrderQueueTest {
     }
 
     @Nested
+    @DisplayName("enqueue() dedupe")
+    class DedupeTests {
+
+        @Test
+        @DisplayName("an id that is already waiting is not enqueued a second time")
+        void duplicateIgnored() {
+            OrderQueue queue = new OrderQueue(5);
+            queue.enqueue(1L);
+            queue.enqueue(1L);
+            assertEquals(1, queue.size());
+        }
+
+        @Test
+        @DisplayName("distinct ids are all kept, in order")
+        void distinctIdsKept() throws InterruptedException {
+            OrderQueue queue = new OrderQueue(5);
+            queue.enqueue(1L);
+            queue.enqueue(2L);
+            assertEquals(1L, queue.take());
+            assertEquals(2L, queue.take());
+        }
+
+        @Test
+        @DisplayName("an id taken by a consumer can be legitimately re-enqueued (the retry path) -- a stale entry never blocks it")
+        void reEnqueueAfterTake() throws InterruptedException {
+            OrderQueue queue = new OrderQueue(5);
+            queue.enqueue(1L);
+            queue.take();
+
+            queue.enqueue(1L);
+
+            assertEquals(1, queue.size());
+            assertTrue(queue.contains(1L));
+        }
+
+        @Test
+        @DisplayName("an id removed by poll() can be re-enqueued too")
+        void reEnqueueAfterPoll() throws InterruptedException {
+            OrderQueue queue = new OrderQueue(5);
+            queue.enqueue(1L);
+            queue.poll(1, java.util.concurrent.TimeUnit.SECONDS);
+
+            queue.enqueue(1L);
+
+            assertEquals(1, queue.size());
+        }
+
+        @Test
+        @DisplayName("an enqueue interrupted while waiting for space does not leave a phantom entry that blocks a later enqueue")
+        void interruptedEnqueueLeavesNoPhantom() throws InterruptedException {
+            OrderQueue queue = new OrderQueue(1);
+            queue.enqueue(1L);
+            Thread producer = new Thread(() -> {
+                try {
+                    queue.enqueue(2L);
+                } catch (IllegalStateException expected) {
+                    // interrupted while blocked on a full queue
+                }
+            });
+            producer.start();
+            org.awaitility.Awaitility.await().until(() -> producer.getState() == Thread.State.WAITING);
+            producer.interrupt();
+            producer.join(2000);
+
+            queue.take();
+            queue.enqueue(2L);
+
+            assertTrue(queue.contains(2L));
+        }
+    }
+
+    @Nested
+    @DisplayName("contains()")
+    class ContainsTests {
+
+        @Test
+        @DisplayName("reports whether an id is currently waiting")
+        void reportsMembership() {
+            OrderQueue queue = new OrderQueue(3);
+            queue.enqueue(7L);
+            assertTrue(queue.contains(7L));
+            assertFalse(queue.contains(8L));
+        }
+    }
+
+    @Nested
     @DisplayName("poll()")
     class PollTests {
 
@@ -176,10 +261,10 @@ class OrderQueueTest {
         @DisplayName("returns the next order immediately when one is available")
         void returnsAvailableOrder() throws InterruptedException {
             OrderQueue queue = new OrderQueue(3);
-            Order order = order(1L);
+            Long order = order(1L);
             queue.enqueue(order);
 
-            assertSame(order, queue.poll(1, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(order, queue.poll(1, java.util.concurrent.TimeUnit.SECONDS));
         }
 
         @Test

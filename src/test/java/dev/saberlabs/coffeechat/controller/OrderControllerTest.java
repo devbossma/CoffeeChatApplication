@@ -7,7 +7,11 @@ import dev.saberlabs.coffeechat.facade.OrderNotFoundException;
 import dev.saberlabs.coffeechat.facade.ShopClosedException;
 import dev.saberlabs.coffeechat.model.CoffeeType;
 import dev.saberlabs.coffeechat.model.Order;
-import dev.saberlabs.coffeechat.support.TestOrders;
+import dev.saberlabs.coffeechat.model.ExtraType;
+import dev.saberlabs.coffeechat.model.LoyaltyTier;
+import dev.saberlabs.coffeechat.model.OrderStatus;
+import dev.saberlabs.coffeechat.model.PriceBreakdown;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -35,8 +39,15 @@ class OrderControllerTest {
     @MockitoBean
     CoffeeShopFacade facade;
 
+    private static Order sampleOrder(long id) {
+        java.time.Instant now = java.time.Instant.now();
+        return new Order(id, 7L, CoffeeType.ESPRESSO, java.util.List.<ExtraType>of(), "Espresso",
+                PriceBreakdown.of(new java.math.BigDecimal("2.50"), java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO),
+                LoyaltyTier.REGULAR, OrderStatus.PLACED, now, now);
+    }
+
     private static Order sampleOrder() {
-        return TestOrders.placedEspresso(1L, TestOrders.customer(7L));
+        return sampleOrder(1L);
     }
 
     @Nested
@@ -134,9 +145,19 @@ class OrderControllerTest {
     class ReorderTests {
 
         @Test
+        @DisplayName("409 when a concurrent writer modified the order first (@Version conflict)")
+        void concurrentModification() throws Exception {
+            when(facade.reorder(1L)).thenThrow(new ObjectOptimisticLockingFailureException(
+                    dev.saberlabs.coffeechat.entity.OrderEntity.class, 1L));
+
+            mvc.perform(post("/api/orders/1/reorder"))
+                    .andExpect(status().isConflict());
+        }
+
+        @Test
         @DisplayName("201 with the cloned order body")
         void reordered() throws Exception {
-            Order clone = TestOrders.placedEspresso(2L, TestOrders.customer(7L));
+            Order clone = sampleOrder(2L);
             when(facade.reorder(1L)).thenReturn(clone);
 
             mvc.perform(post("/api/orders/1/reorder"))

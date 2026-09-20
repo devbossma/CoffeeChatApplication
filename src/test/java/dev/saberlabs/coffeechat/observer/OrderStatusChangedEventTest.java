@@ -1,8 +1,8 @@
 package dev.saberlabs.coffeechat.observer;
 
-import dev.saberlabs.coffeechat.model.Order;
+import dev.saberlabs.coffeechat.entity.OrderEntity;
 import dev.saberlabs.coffeechat.model.OrderStatus;
-import dev.saberlabs.coffeechat.support.TestOrders;
+import dev.saberlabs.coffeechat.support.TestEntities;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -23,7 +23,7 @@ class OrderStatusChangedEventTest {
         @Test
         @DisplayName("captures the order id, customer id, previous status and current status")
         void capturesFields() {
-            Order order = TestOrders.placedEspresso(42L, TestOrders.customer(7L));
+            OrderEntity order = TestEntities.placedEspresso(42L, TestEntities.customer(7L));
             order.transitionTo(OrderStatus.PREPARING);
 
             OrderStatusChangedEvent event = OrderStatusChangedEvent.of(order, OrderStatus.PLACED);
@@ -37,7 +37,7 @@ class OrderStatusChangedEventTest {
         @Test
         @DisplayName("a just-placed order has a null 'from'")
         void nullFromOnPlacement() {
-            Order order = TestOrders.placedEspresso(1L, TestOrders.customer(1L));
+            OrderEntity order = TestEntities.placedEspresso(1L, TestEntities.customer(1L));
             OrderStatusChangedEvent event = OrderStatusChangedEvent.of(order, null);
             assertNull(event.from());
             assertEquals(OrderStatus.PLACED, event.to());

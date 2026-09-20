@@ -153,6 +153,28 @@ public class OrderEntity {
         this.status = Objects.requireNonNull(status, "status cannot be null");
     }
 
+    /**
+     * The one place a legal forward status move is enforced ({@link OrderStatus#canTransitionTo}).
+     * Called on an entity loaded inside the command's transaction, so the {@code @Version} check
+     * at flush is what arbitrates two concurrent transitions of the same row.
+     *
+     * @throws IllegalStateException if {@code target} is not reachable from the current status
+     */
+    public void transitionTo(@NotNull OrderStatus target) {
+        Objects.requireNonNull(target, "target status cannot be null");
+        if (!status.canTransitionTo(target)) {
+            throw new IllegalStateException("Illegal order transition: " + status + " -> " + target);
+        }
+        this.status = target;
+        this.updatedAt = Instant.now();
+    }
+
+    /** Undo-only reverse move: forces the status back without a legality check. */
+    public void restoreStatus(@NotNull OrderStatus target) {
+        this.status = Objects.requireNonNull(target, "target status cannot be null");
+        this.updatedAt = Instant.now();
+    }
+
     public LoyaltyTier appliedLoyaltyTier() {
         return appliedLoyaltyTier;
     }

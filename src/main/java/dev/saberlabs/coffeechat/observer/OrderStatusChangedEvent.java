@@ -1,6 +1,6 @@
 package dev.saberlabs.coffeechat.observer;
 
-import dev.saberlabs.coffeechat.model.Order;
+import dev.saberlabs.coffeechat.entity.OrderEntity;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 
 import java.time.Instant;
@@ -37,7 +37,7 @@ public record OrderStatusChangedEvent(Long orderId,
      * @param order the order, post-transition (its {@code status()} is the new one)
      * @param from  the status it held before the transition
      */
-    public static OrderStatusChangedEvent of(Order order, OrderStatus from) {
+    public static OrderStatusChangedEvent of(OrderEntity order, OrderStatus from) {
         Objects.requireNonNull(order, "order cannot be null");
         return new OrderStatusChangedEvent(
                 order.id(),

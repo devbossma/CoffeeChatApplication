@@ -1,9 +1,11 @@
 package dev.saberlabs.coffeechat.command;
 
+import dev.saberlabs.coffeechat.support.RecordingTransactionManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.OptimisticLockingFailureException;
 
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -16,11 +18,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @DisplayName("OrderInvoker")
 class OrderInvokerTest {
 
+    private RecordingTransactionManager transactions;
     private OrderInvoker invoker;
 
     @BeforeEach
     void setUp() {
-        invoker = new OrderInvoker();
+        transactions = new RecordingTransactionManager();
+        invoker = new OrderInvoker(transactions);
     }
 
     /** A minimal command that counts its own execute/undo calls. */
@@ -74,6 +78,47 @@ class OrderInvokerTest {
         }
 
         @Test
+        @DisplayName("runs each command in exactly one committed transaction")
+        void oneTransactionPerCommand() {
+            invoker.executeCommand(new CountingCommand("A"));
+            assertEquals(1, transactions.begun.get());
+            assertEquals(1, transactions.committed.get());
+            assertEquals(0, transactions.rolledBack.get());
+        }
+
+        @Test
+        @DisplayName("a command that throws rolls its transaction back")
+        void rollsBackOnFailure() {
+            OrderCommand boom = new OrderCommand() {
+                @Override public void execute() { throw new IllegalStateException("boom"); }
+                @Override public void undo() { }
+                @Override public String name() { return "Boom"; }
+            };
+            assertThrows(IllegalStateException.class, () -> invoker.executeCommand(boom));
+            assertEquals(1, transactions.rolledBack.get());
+            assertEquals(0, transactions.committed.get());
+        }
+
+        @Test
+        @DisplayName("a command whose transaction fails AT COMMIT (e.g. an optimistic-lock conflict) is not recorded")
+        void notRecordedWhenCommitFails() {
+            transactions.failCommitsWith(new OptimisticLockingFailureException("stale"));
+            CountingCommand cmd = new CountingCommand("A");
+
+            assertThrows(OptimisticLockingFailureException.class, () -> invoker.executeCommand(cmd));
+
+            assertEquals(1, cmd.executed.get(), "execute() itself ran; only the commit failed");
+            assertTrue(invoker.history().isEmpty());
+            assertEquals(0, invoker.pendingUndoCount());
+        }
+
+        @Test
+        @DisplayName("rejects a null command")
+        void rejectsNull() {
+            assertThrows(NullPointerException.class, () -> invoker.executeCommand(null));
+        }
+
+        @Test
         @DisplayName("history is capped at 100 entries, dropping the oldest")
         void historyCapped() {
             for (int i = 0; i < 150; i++) {
@@ -109,6 +154,29 @@ class OrderInvokerTest {
         @DisplayName("returns null when there is nothing to undo")
         void nullWhenNothing() {
             assertNull(invoker.undoLast());
+        }
+
+        @Test
+        @DisplayName("undo runs in its own committed transaction")
+        void undoInTransaction() {
+            invoker.executeCommand(new CountingCommand("A"));
+            invoker.undoLast();
+            assertEquals(2, transactions.committed.get());
+        }
+
+        @Test
+        @DisplayName("a failed undo leaves the command on the undo stack")
+        void failedUndoKeepsCommand() {
+            OrderCommand stuck = new OrderCommand() {
+                @Override public void execute() { }
+                @Override public void undo() { throw new IllegalStateException("cannot undo"); }
+                @Override public String name() { return "Stuck"; }
+            };
+            invoker.executeCommand(stuck);
+
+            assertThrows(IllegalStateException.class, () -> invoker.undoLast());
+
+            assertEquals(1, invoker.pendingUndoCount());
         }
 
         @Test

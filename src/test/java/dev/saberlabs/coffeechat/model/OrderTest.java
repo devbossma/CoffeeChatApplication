@@ -5,32 +5,28 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@DisplayName("Order")
+/**
+ * {@code Order} is now an immutable snapshot record; the legality rules that used to live on the
+ * mutable class ({@code transitionTo}/{@code restoreStatus}) moved to {@code OrderEntity} and are
+ * tested in {@code OrderEntityTest}.
+ */
+@DisplayName("Order (snapshot)")
 class OrderTest {
 
-    private static Customer customer() {
-        Customer c = new Customer("Alice");
-        c.assignId(1L);
-        return c;
-    }
+    private static final PriceBreakdown PRICE =
+            PriceBreakdown.of(new BigDecimal("2.50"), new BigDecimal("0.50"), new BigDecimal("0.00"));
+    private static final Instant NOW = Instant.now();
 
-    private static Order espressoOrder(List<ExtraType> extras) {
-        return new Order(
-                customer(),
-                new Espresso(),
-                CoffeeType.ESPRESSO,
-                extras,
-                PriceBreakdown.of(new BigDecimal("2.50"), new BigDecimal("0.00"), new BigDecimal("0.00")),
-                LoyaltyTier.REGULAR);
+    private static Order order(List<ExtraType> extras) {
+        return new Order(1L, 2L, CoffeeType.ESPRESSO, extras, "Espresso", PRICE,
+                LoyaltyTier.REGULAR, OrderStatus.PLACED, NOW, NOW);
     }
 
     @Nested
@@ -38,18 +34,26 @@ class OrderTest {
     class ConstructorTests {
 
         @Test
-        @DisplayName("builds an order that starts with a null status and no id")
-        void startsUnplaced() {
-            Order order = espressoOrder(List.of());
-            assertNull(order.status());
-            assertNull(order.id());
+        @DisplayName("captures every field")
+        void capturesFields() {
+            Order order = order(List.of(ExtraType.MILK));
+            assertEquals(1L, order.id());
+            assertEquals(2L, order.customerId());
+            assertEquals(CoffeeType.ESPRESSO, order.baseType());
+            assertEquals(List.of(ExtraType.MILK), order.extras());
+            assertEquals("Espresso", order.coffeeDescription());
+            assertEquals(PRICE, order.price());
+            assertEquals(LoyaltyTier.REGULAR, order.appliedLoyaltyTier());
+            assertEquals(OrderStatus.PLACED, order.status());
+            assertEquals(NOW, order.placedAt());
+            assertEquals(NOW, order.updatedAt());
         }
 
         @Test
         @DisplayName("defensively copies the extras list")
         void copiesExtras() {
             List<ExtraType> mutable = new ArrayList<>(List.of(ExtraType.MILK));
-            Order order = espressoOrder(mutable);
+            Order order = order(mutable);
             mutable.add(ExtraType.SUGAR);
             assertEquals(List.of(ExtraType.MILK), order.extras());
         }
@@ -57,151 +61,73 @@ class OrderTest {
         @Test
         @DisplayName("returns an unmodifiable extras list")
         void extrasUnmodifiable() {
-            Order order = espressoOrder(List.of(ExtraType.MILK));
-            assertThrows(UnsupportedOperationException.class,
-                    () -> order.extras().add(ExtraType.SUGAR));
+            Order order = order(List.of(ExtraType.MILK));
+            assertThrows(UnsupportedOperationException.class, () -> order.extras().add(ExtraType.SUGAR));
         }
 
         @Test
-        @DisplayName("rejects a null customer")
-        void rejectsNullCustomer() {
-            assertThrows(NullPointerException.class, () -> new Order(
-                    null, new Espresso(), CoffeeType.ESPRESSO, List.of(),
-                    PriceBreakdown.of(new BigDecimal("2.50"), BigDecimal.ZERO, BigDecimal.ZERO),
-                    LoyaltyTier.REGULAR));
+        @DisplayName("rejects a null id")
+        void rejectsNullId() {
+            assertThrows(NullPointerException.class, () -> new Order(null, 2L, CoffeeType.ESPRESSO, List.of(),
+                    "Espresso", PRICE, LoyaltyTier.REGULAR, OrderStatus.PLACED, NOW, NOW));
         }
 
         @Test
-        @DisplayName("rejects a coffee whose type disagrees with baseType")
-        void rejectsTypeMismatch() {
-            assertThrows(IllegalArgumentException.class, () -> new Order(
-                    customer(), new Espresso(), CoffeeType.LATTE, List.of(),
-                    PriceBreakdown.of(new BigDecimal("2.50"), BigDecimal.ZERO, BigDecimal.ZERO),
-                    LoyaltyTier.REGULAR));
-        }
-    }
-
-    @Nested
-    @DisplayName("assignId()")
-    class AssignIdTests {
-
-        @Test
-        @DisplayName("sets the id once")
-        void setsId() {
-            Order order = espressoOrder(List.of());
-            order.assignId(5L);
-            assertEquals(5L, order.id());
+        @DisplayName("rejects a null customer id")
+        void rejectsNullCustomerId() {
+            assertThrows(NullPointerException.class, () -> new Order(1L, null, CoffeeType.ESPRESSO, List.of(),
+                    "Espresso", PRICE, LoyaltyTier.REGULAR, OrderStatus.PLACED, NOW, NOW));
         }
 
         @Test
-        @DisplayName("rejects a second id assignment")
-        void rejectsSecondAssignment() {
-            Order order = espressoOrder(List.of());
-            order.assignId(5L);
-            assertThrows(IllegalStateException.class, () -> order.assignId(6L));
-        }
-    }
-
-    @Nested
-    @DisplayName("restoreStatus()")
-    class RestoreStatusTests {
-
-        @Test
-        @DisplayName("forces a backwards status the transition guard would reject")
-        void forcesBackwards() {
-            Order order = espressoOrder(List.of());
-            order.transitionTo(OrderStatus.PLACED);
-            order.transitionTo(OrderStatus.PREPARING);
-            order.restoreStatus(OrderStatus.PLACED);
-            assertEquals(OrderStatus.PLACED, order.status());
+        @DisplayName("rejects a null base type")
+        void rejectsNullBaseType() {
+            assertThrows(NullPointerException.class, () -> new Order(1L, 2L, null, List.of(),
+                    "Espresso", PRICE, LoyaltyTier.REGULAR, OrderStatus.PLACED, NOW, NOW));
         }
 
         @Test
-        @DisplayName("refreshes updatedAt")
-        void refreshesUpdatedAt() {
-            Order order = espressoOrder(List.of());
-            order.transitionTo(OrderStatus.PLACED);
-            order.restoreStatus(OrderStatus.CANCELLED);
-            assertNotNull(order.updatedAt());
+        @DisplayName("rejects null extras")
+        void rejectsNullExtras() {
+            assertThrows(NullPointerException.class, () -> new Order(1L, 2L, CoffeeType.ESPRESSO, null,
+                    "Espresso", PRICE, LoyaltyTier.REGULAR, OrderStatus.PLACED, NOW, NOW));
         }
 
         @Test
-        @DisplayName("rejects a null target")
-        void rejectsNull() {
-            Order order = espressoOrder(List.of());
-            assertThrows(NullPointerException.class, () -> order.restoreStatus(null));
-        }
-    }
-
-    @Nested
-    @DisplayName("toString()")
-    class ToStringTests {
-
-        @Test
-        @DisplayName("includes the customer name, coffee description and total")
-        void includesKeyFields() {
-            Order order = espressoOrder(List.of());
-            String text = order.toString();
-            assertTrue(text.contains("Alice"));
-            assertTrue(text.contains("Espresso"));
-            assertTrue(text.contains("2.50"));
-        }
-    }
-
-    @Nested
-    @DisplayName("transitionTo()")
-    class TransitionToTests {
-
-        @Test
-        @DisplayName("null -> PLACED is the only legal first move, and stamps placedAt")
-        void firstMoveToPlaced() {
-            Order order = espressoOrder(List.of());
-            order.transitionTo(OrderStatus.PLACED);
-            assertEquals(OrderStatus.PLACED, order.status());
-            assertNotNull(order.placedAt());
-            assertNotNull(order.updatedAt());
+        @DisplayName("rejects a null description")
+        void rejectsNullDescription() {
+            assertThrows(NullPointerException.class, () -> new Order(1L, 2L, CoffeeType.ESPRESSO, List.of(),
+                    null, PRICE, LoyaltyTier.REGULAR, OrderStatus.PLACED, NOW, NOW));
         }
 
         @Test
-        @DisplayName("rejects any first move other than PLACED")
-        void firstMoveMustBePlaced() {
-            Order order = espressoOrder(List.of());
-            assertThrows(IllegalStateException.class, () -> order.transitionTo(OrderStatus.PREPARING));
+        @DisplayName("rejects a null price")
+        void rejectsNullPrice() {
+            assertThrows(NullPointerException.class, () -> new Order(1L, 2L, CoffeeType.ESPRESSO, List.of(),
+                    "Espresso", null, LoyaltyTier.REGULAR, OrderStatus.PLACED, NOW, NOW));
         }
 
         @Test
-        @DisplayName("walks the full happy-path lifecycle")
-        void happyPath() {
-            Order order = espressoOrder(List.of());
-            order.transitionTo(OrderStatus.PLACED);
-            order.transitionTo(OrderStatus.PREPARING);
-            order.transitionTo(OrderStatus.READY);
-            order.transitionTo(OrderStatus.FULFILLED);
-            assertEquals(OrderStatus.FULFILLED, order.status());
+        @DisplayName("rejects a null applied tier")
+        void rejectsNullTier() {
+            assertThrows(NullPointerException.class, () -> new Order(1L, 2L, CoffeeType.ESPRESSO, List.of(),
+                    "Espresso", PRICE, null, OrderStatus.PLACED, NOW, NOW));
         }
 
         @Test
-        @DisplayName("rejects an illegal jump")
-        void rejectsIllegalJump() {
-            Order order = espressoOrder(List.of());
-            order.transitionTo(OrderStatus.PLACED);
-            assertThrows(IllegalStateException.class, () -> order.transitionTo(OrderStatus.READY));
+        @DisplayName("rejects a null status")
+        void rejectsNullStatus() {
+            assertThrows(NullPointerException.class, () -> new Order(1L, 2L, CoffeeType.ESPRESSO, List.of(),
+                    "Espresso", PRICE, LoyaltyTier.REGULAR, null, NOW, NOW));
         }
 
         @Test
-        @DisplayName("rejects a transition out of a terminal state")
-        void rejectsMoveFromTerminal() {
-            Order order = espressoOrder(List.of());
-            order.transitionTo(OrderStatus.PLACED);
-            order.transitionTo(OrderStatus.CANCELLED);
-            assertThrows(IllegalStateException.class, () -> order.transitionTo(OrderStatus.PREPARING));
-        }
-
-        @Test
-        @DisplayName("rejects a null target")
-        void rejectsNullTarget() {
-            Order order = espressoOrder(List.of());
-            assertThrows(NullPointerException.class, () -> order.transitionTo(null));
+        @DisplayName("rejects null timestamps")
+        void rejectsNullTimestamps() {
+            assertThrows(NullPointerException.class, () -> new Order(1L, 2L, CoffeeType.ESPRESSO, List.of(),
+                    "Espresso", PRICE, LoyaltyTier.REGULAR, OrderStatus.PLACED, null, NOW));
+            assertThrows(NullPointerException.class, () -> new Order(1L, 2L, CoffeeType.ESPRESSO, List.of(),
+                    "Espresso", PRICE, LoyaltyTier.REGULAR, OrderStatus.PLACED, NOW, null));
         }
     }
 }

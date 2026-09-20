@@ -4,6 +4,7 @@ import dev.saberlabs.coffeechat.facade.CoffeeNotOnMenuException;
 import dev.saberlabs.coffeechat.facade.CustomerNotFoundException;
 import dev.saberlabs.coffeechat.facade.OrderNotFoundException;
 import dev.saberlabs.coffeechat.facade.ShopClosedException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -25,6 +26,13 @@ public class RestExceptionHandler {
     @ExceptionHandler({CustomerNotFoundException.class, OrderNotFoundException.class})
     public ProblemDetail onNotFound(RuntimeException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
+    }
+
+    /** A concurrent writer changed the order first; the client should re-read and decide again. */
+    @ExceptionHandler(OptimisticLockingFailureException.class)
+    public ProblemDetail onConcurrentUpdate(OptimisticLockingFailureException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT,
+                "The order was modified concurrently; re-read it and try again");
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

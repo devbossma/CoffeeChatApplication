@@ -44,6 +44,12 @@ class UserEntityTest {
         }
 
         @Test
+        @DisplayName("rejects a blank name")
+        void rejectsBlankName() {
+            assertThrows(IllegalArgumentException.class, () -> new UserEntity("   ", Role.CUSTOMER));
+        }
+
+        @Test
         @DisplayName("rejects a null role")
         void rejectsNullRole() {
             assertThrows(NullPointerException.class, () -> new UserEntity("Alice", null));

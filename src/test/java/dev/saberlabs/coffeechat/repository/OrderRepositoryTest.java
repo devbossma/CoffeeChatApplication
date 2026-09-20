@@ -127,6 +127,31 @@ class OrderRepositoryTest extends AbstractRepositoryTest {
     }
 
     @Nested
+    @DisplayName("findByCustomerId()")
+    class FindByCustomerIdTests {
+
+        @Test
+        @DisplayName("returns only that customer's orders")
+        void filtersByCustomer() {
+            UserEntity other = userRepository.saveAndFlush(new UserEntity("Bob", Role.CUSTOMER));
+            orderRepository.saveAndFlush(espressoOrder(List.of()));
+            orderRepository.saveAndFlush(espressoOrder(List.of()));
+            Instant now = Instant.now();
+            orderRepository.saveAndFlush(new OrderEntity(other, CoffeeType.LATTE, List.of(), OrderStatus.PLACED,
+                    LoyaltyTier.REGULAR, PriceBreakdown.of(new BigDecimal("3.50"), BigDecimal.ZERO, BigDecimal.ZERO), now, now));
+
+            assertEquals(2, orderRepository.findByCustomerId(customer.id()).size());
+            assertEquals(1, orderRepository.findByCustomerId(other.id()).size());
+        }
+
+        @Test
+        @DisplayName("is empty for a customer with no orders")
+        void emptyWhenNone() {
+            assertTrue(orderRepository.findByCustomerId(customer.id()).isEmpty());
+        }
+    }
+
+    @Nested
     @DisplayName("toString()")
     class ToStringTests {
 

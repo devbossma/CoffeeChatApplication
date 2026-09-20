@@ -15,4 +15,7 @@ public interface OrderRepository extends JpaRepository<OrderEntity, Long> {
      * {@code idx_orders_status}.
      */
     List<OrderEntity> findByStatusIn(List<OrderStatus> statuses);
+
+    /** Served by {@code idx_orders_customer_id}. */
+    List<OrderEntity> findByCustomerId(Long customerId);
 }

@@ -1,6 +1,8 @@
 package dev.saberlabs.coffeechat.controller;
 
-import dev.saberlabs.coffeechat.model.Customer;
+import dev.saberlabs.coffeechat.entity.UserEntity;
+import dev.saberlabs.coffeechat.model.Role;
+import dev.saberlabs.coffeechat.support.TestEntities;
 import dev.saberlabs.coffeechat.service.CustomerService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -34,8 +36,7 @@ class CustomerControllerTest {
         @Test
         @DisplayName("201 with the new customer, defaulting to REGULAR / 0 orders")
         void created() throws Exception {
-            Customer created = new Customer("Alice");
-            created.assignId(1L);
+            UserEntity created = TestEntities.withId(new UserEntity("Alice", Role.CUSTOMER), 1L);
             when(customers.create("Alice")).thenReturn(created);
 
             mvc.perform(post("/api/customers")

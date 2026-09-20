@@ -3,37 +3,38 @@ package dev.saberlabs.coffeechat.command;
 import dev.saberlabs.coffeechat.adapter.PaymentGatewayResolver;
 import dev.saberlabs.coffeechat.adapter.PaymentProvider;
 import dev.saberlabs.coffeechat.adapter.PaymentResult;
-import dev.saberlabs.coffeechat.model.Order;
+import dev.saberlabs.coffeechat.service.OrderService;
 import jakarta.validation.constraints.NotNull;
 
 import java.util.Objects;
 
 /**
- * Pattern 6: COMMAND &mdash; collect payment for the order through the Adapter selected by
- * {@link PaymentProvider}. Does not change the order status (payment is orthogonal to the
- * prep lifecycle, as in {@code MyDesignPattern}); it throws {@link PaymentFailedException} if the
- * gateway declines. {@code undo()} is a best-effort refund note.
- *
- * <p>Part 03 persists the {@link PaymentResult} as a {@code PaymentEntity}; here it is kept on
- * the command for the caller to read.
+ * Collects payment through the provider's Adapter. The amount is always the order's persisted
+ * {@code price().total()}, never a caller-supplied value. (Step 3c reshapes this to persist the
+ * outcome and return a result instead of throwing.)
  */
 public class PayOrderCommand implements OrderCommand {
 
-    private final Order order;
+    private final Long orderId;
     private final PaymentProvider provider;
     private final PaymentGatewayResolver gateways;
+    private final OrderService orders;
     private PaymentResult result;
 
-    public PayOrderCommand(@NotNull Order order, @NotNull PaymentProvider provider, @NotNull PaymentGatewayResolver gateways) {
-        this.order = Objects.requireNonNull(order, "order cannot be null");
+    public PayOrderCommand(@NotNull Long orderId,
+                           @NotNull PaymentProvider provider,
+                           @NotNull PaymentGatewayResolver gateways,
+                           @NotNull OrderService orders) {
+        this.orderId = Objects.requireNonNull(orderId, "orderId cannot be null");
         this.provider = Objects.requireNonNull(provider, "provider cannot be null");
         this.gateways = Objects.requireNonNull(gateways, "gateways cannot be null");
+        this.orders = Objects.requireNonNull(orders, "orders cannot be null");
     }
 
     @Override
     public void execute() {
-        String orderRef = "ORDER-" + order.id();
-        result = gateways.forProvider(provider).pay(orderRef, order.price().total());
+        var total = orders.require(orderId).price().total();
+        result = gateways.forProvider(provider).pay("ORDER-" + orderId, total);
         if (!result.isPaid()) {
             throw new PaymentFailedException(result);
         }

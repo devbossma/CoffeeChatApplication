@@ -1,55 +1,46 @@
 package dev.saberlabs.coffeechat.multithread;
 
-import dev.saberlabs.coffeechat.model.Order;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 import dev.saberlabs.coffeechat.observer.OrderStatusChangedEvent;
-import dev.saberlabs.coffeechat.service.OrderService;
 import jakarta.validation.constraints.NotNull;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 
 import java.util.Objects;
 
 /**
- * Enqueues a newly-placed order onto {@link OrderQueue} for the Barista pool to pick up.
+ * Pattern: PRODUCER-CONSUMER (Part 02) &mdash; the producer side. Turns "an order reached PLACED"
+ * into "its id is on the {@link OrderQueue}".
  *
- * <p>A second, independent {@code @EventListener} on {@link OrderStatusChangedEvent}, alongside
- * {@code dev.saberlabs.coffeechat.observer.OrderNotificationListener} &mdash; not the same
- * listener doing both jobs. The one-listener rule in {@code CLAUDE.md}'s source-of-truth table is
- * scoped to <em>notifications</em>; queue dispatch is an unrelated concern reacting to the same
- * event, which is exactly what an event bus is for. {@code CoffeeShopFacade} never gets a direct
- * dependency on {@code OrderQueue}.
+ * <p><b>AFTER_COMMIT, deliberately.</b> The publishing command is still inside its transaction when
+ * the event is raised; enqueuing then would let a barista dequeue an id whose row is not yet
+ * visible (or is about to roll back). {@code AFTER_COMMIT} fires only once the row is durable, so a
+ * barista can never dequeue an uncommitted order.
  *
- * <p>By the time this listener runs, the order is already saved in {@code OrderService}
- * ({@code AbstractOrderCommand.transition()} calls {@code orders.save(order)} before publishing,
- * on the same thread, and Spring's default {@code @EventListener} is synchronous) &mdash; so the
- * lookup below cannot race the placement.
+ * <p><b>Do not touch the database from this method.</b> It runs after the transaction has
+ * committed, so a repository call here either fails with "no transaction" or silently does nothing
+ * useful. If a future listener in this phase must write, it needs its own
+ * {@code @Transactional(propagation = REQUIRES_NEW)}. This one only enqueues an id.
+ *
+ * <p>{@code @TransactionalEventListener} <em>drops</em> the event when there is no active
+ * transaction at publish time; {@code OrderEventPublisher} therefore refuses to publish outside
+ * one, so that drop cannot happen silently.
  */
 @Component
 public class OrderQueueDispatcher {
 
-    private static final Logger log = LoggerFactory.getLogger(OrderQueueDispatcher.class);
-
     private final OrderQueue orderQueue;
-    private final OrderService orders;
 
-    public OrderQueueDispatcher(@NotNull OrderQueue orderQueue, @NotNull OrderService orders) {
+    public OrderQueueDispatcher(@NotNull OrderQueue orderQueue) {
         this.orderQueue = Objects.requireNonNull(orderQueue, "orderQueue cannot be null");
-        this.orders = Objects.requireNonNull(orders, "orders cannot be null");
     }
 
-    @EventListener
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onOrderStatusChanged(OrderStatusChangedEvent event) {
         if (event.to() != OrderStatus.PLACED) {
             return;
         }
-        Order order = orders.findById(event.orderId()).orElse(null);
-        if (order == null) {
-            log.warn("PLACED event for order {} but it is not in OrderService — not enqueued", event.orderId());
-            return;
-        }
-        orderQueue.enqueue(order);
+        orderQueue.enqueue(event.orderId());
     }
 }

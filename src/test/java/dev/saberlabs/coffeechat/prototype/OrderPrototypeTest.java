@@ -2,8 +2,6 @@ package dev.saberlabs.coffeechat.prototype;
 
 import dev.saberlabs.coffeechat.facade.PlaceOrderRequest;
 import dev.saberlabs.coffeechat.model.CoffeeType;
-import dev.saberlabs.coffeechat.model.Customer;
-import dev.saberlabs.coffeechat.model.Espresso;
 import dev.saberlabs.coffeechat.model.ExtraType;
 import dev.saberlabs.coffeechat.model.LoyaltyTier;
 import dev.saberlabs.coffeechat.model.Order;
@@ -15,6 +13,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -32,18 +31,10 @@ class OrderPrototypeTest {
     }
 
     private static Order fulfilledOrder() {
-        Customer customer = new Customer("Alice");
-        customer.assignId(3L);
-        Order order = new Order(
-                customer, new Espresso(), CoffeeType.ESPRESSO, List.of(ExtraType.MILK),
+        Instant now = Instant.now();
+        return new Order(99L, 3L, CoffeeType.ESPRESSO, List.of(ExtraType.MILK), "Espresso with milk",
                 PriceBreakdown.of(new BigDecimal("2.50"), new BigDecimal("0.50"), new BigDecimal("0.00")),
-                LoyaltyTier.REGULAR);
-        order.assignId(99L);
-        order.transitionTo(OrderStatus.PLACED);
-        order.transitionTo(OrderStatus.PREPARING);
-        order.transitionTo(OrderStatus.READY);
-        order.transitionTo(OrderStatus.FULFILLED);
-        return order;
+                LoyaltyTier.REGULAR, OrderStatus.FULFILLED, now, now);
     }
 
     @Nested
@@ -77,6 +68,20 @@ class OrderPrototypeTest {
             prototype.copyOf(original);
             assertThrows(UnsupportedOperationException.class,
                     () -> prototype.extras().add(ExtraType.SUGAR));
+        }
+
+        @Test
+        @DisplayName("keeps duplicate extras and their order (rebuilt from the persisted list, not a description)")
+        void preservesOrderedDuplicateExtras() {
+            Instant now = Instant.now();
+            Order original = new Order(99L, 3L, CoffeeType.LATTE,
+                    List.of(ExtraType.MILK, ExtraType.SUGAR, ExtraType.MILK), "Latte",
+                    PriceBreakdown.of(new BigDecimal("3.50"), new BigDecimal("1.50"), new BigDecimal("0.00")),
+                    LoyaltyTier.GOLD, OrderStatus.READY, now, now);
+
+            prototype.copyOf(original);
+
+            assertEquals(List.of(ExtraType.MILK, ExtraType.SUGAR, ExtraType.MILK), prototype.extras());
         }
 
         @Test

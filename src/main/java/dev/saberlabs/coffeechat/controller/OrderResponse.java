@@ -27,8 +27,8 @@ public record OrderResponse(Long id,
     public static OrderResponse from(Order order) {
         return new OrderResponse(
                 order.id(),
-                order.customer().id(),
-                order.coffee().description(),
+                order.customerId(),
+                order.coffeeDescription(),
                 order.baseType(),
                 order.extras(),
                 order.price().base(),

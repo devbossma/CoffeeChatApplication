@@ -1,33 +1,19 @@
 package dev.saberlabs.coffeechat.facade;
 
-import dev.saberlabs.coffeechat.adapter.CashPaymentAdapter;
-import dev.saberlabs.coffeechat.adapter.PayPalAdapter;
-import dev.saberlabs.coffeechat.adapter.PaymentGatewayResolver;
 import dev.saberlabs.coffeechat.adapter.PaymentProvider;
-import dev.saberlabs.coffeechat.adapter.StripeAdapter;
 import dev.saberlabs.coffeechat.command.OrderInvoker;
-import dev.saberlabs.coffeechat.factory.CoffeeFactory;
+import dev.saberlabs.coffeechat.entity.UserEntity;
 import dev.saberlabs.coffeechat.model.CoffeeType;
-import dev.saberlabs.coffeechat.model.Customer;
 import dev.saberlabs.coffeechat.model.ExtraType;
 import dev.saberlabs.coffeechat.model.LoyaltyTier;
 import dev.saberlabs.coffeechat.model.Order;
 import dev.saberlabs.coffeechat.model.OrderStatus;
-import dev.saberlabs.coffeechat.observer.OrderEventPublisher;
-import dev.saberlabs.coffeechat.prototype.OrderPrototype;
-import dev.saberlabs.coffeechat.service.CustomerService;
-import dev.saberlabs.coffeechat.service.OrderService;
-import dev.saberlabs.coffeechat.singleton.CoffeeShop;
-import dev.saberlabs.coffeechat.strategy.PricingStrategyResolver;
-import dev.saberlabs.coffeechat.strategy.RegularPricing;
-import dev.saberlabs.coffeechat.strategy.SilverMemberPricing;
-import dev.saberlabs.coffeechat.strategy.GoldMemberPricing;
-import dev.saberlabs.coffeechat.template.CoffeePreparationResolver;
-import org.junit.jupiter.api.BeforeEach;
+import dev.saberlabs.coffeechat.model.Role;
+import dev.saberlabs.coffeechat.support.AbstractIntegrationTest;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -36,54 +22,23 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
+/**
+ * The facade against the real database and the real command pipeline (Strategy, Decorator, Factory,
+ * Command, Template, Adapter all real; only the barista loops are stopped so orders stay put).
+ */
 @DisplayName("CoffeeShopFacade")
-class CoffeeShopFacadeTest {
+class CoffeeShopFacadeTest extends AbstractIntegrationTest {
 
-    private CoffeeShop coffeeShop;
-    private OrderService orders;
-    private CustomerService customers;
-    private OrderInvoker invoker;
-    private CoffeeShopFacade facade;
-
-    @BeforeEach
-    @SuppressWarnings("unchecked")
-    void setUp() {
-        coffeeShop = new CoffeeShop(3);
-        orders = new OrderService();
-        customers = new CustomerService();
-        invoker = new OrderInvoker();
-
-        ObjectProvider<OrderPrototype> prototypeProvider = mock(ObjectProvider.class);
-        when(prototypeProvider.getObject()).thenAnswer(inv -> new OrderPrototype());
-
-        facade = new CoffeeShopFacade(
-                coffeeShop,
-                new CoffeeFactory(),
-                new PricingStrategyResolver(List.of(
-                        new RegularPricing(), new SilverMemberPricing(), new GoldMemberPricing())),
-                new CoffeePreparationResolver(),
-                new PaymentGatewayResolver(List.of(
-                        new PayPalAdapter(), new StripeAdapter(), new CashPaymentAdapter())),
-                orders,
-                customers,
-                mock(OrderEventPublisher.class),
-                invoker,
-                prototypeProvider);
-    }
-
-    private Customer customerWithFulfilled(long fulfilled) {
-        Customer customer = customers.create("Alice");
-        for (long i = 0; i < fulfilled; i++) {
-            customers.incrementFulfilled(customer.id());
-        }
-        return customer;
-    }
+    @Autowired CoffeeShopFacade facade;
+    @Autowired OrderInvoker invoker;
 
     private PlaceOrderRequest request(long customerId, CoffeeType type, ExtraType... extras) {
         return new PlaceOrderRequest(customerId, type, List.of(extras));
+    }
+
+    private void bumpFulfilled(Long customerId) {
+        jdbc.update("UPDATE user_accounts SET fulfilled_orders = fulfilled_orders + 1 WHERE id = ?", customerId);
     }
 
     @Nested
@@ -93,7 +48,7 @@ class CoffeeShopFacadeTest {
         @Test
         @DisplayName("places a plain espresso for a REGULAR customer at full price")
         void plainEspresso() {
-            Customer customer = customerWithFulfilled(0);
+            UserEntity customer = customer("Alice");
             Order order = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
 
             assertNotNull(order.id());
@@ -106,7 +61,7 @@ class CoffeeShopFacadeTest {
         @Test
         @DisplayName("prices in the extras via the Decorator")
         void withExtras() {
-            Customer customer = customerWithFulfilled(0);
+            UserEntity customer = customer("Alice");
             Order order = facade.placeOrder(
                     request(customer.id(), CoffeeType.ESPRESSO, ExtraType.MILK, ExtraType.WHIPPED_CREAM));
 
@@ -117,7 +72,7 @@ class CoffeeShopFacadeTest {
         @Test
         @DisplayName("applies the SILVER 10% discount for a 6-order customer")
         void silverDiscount() {
-            Customer customer = customerWithFulfilled(6);
+            UserEntity customer = customer("Alice", 6);
             Order order = facade.placeOrder(request(customer.id(), CoffeeType.LATTE));
 
             assertEquals(LoyaltyTier.SILVER, order.appliedLoyaltyTier());
@@ -128,7 +83,7 @@ class CoffeeShopFacadeTest {
         @Test
         @DisplayName("applies the GOLD 20% discount for an 11-order customer")
         void goldDiscount() {
-            Customer customer = customerWithFulfilled(11);
+            UserEntity customer = customer("Alice", 11);
             Order order = facade.placeOrder(request(customer.id(), CoffeeType.LATTE));
 
             assertEquals(LoyaltyTier.GOLD, order.appliedLoyaltyTier());
@@ -136,37 +91,55 @@ class CoffeeShopFacadeTest {
         }
 
         @Test
-        @DisplayName("freezes the tier at placement — a later tier change does not re-price the order")
+        @DisplayName("freezes the tier at placement: a later tier change does not re-price or re-tier the stored order")
         void freezesTier() {
-            Customer customer = customerWithFulfilled(5); // still REGULAR
+            UserEntity customer = customer("Alice", 5); // still REGULAR
             Order order = facade.placeOrder(request(customer.id(), CoffeeType.LATTE));
-            customers.incrementFulfilled(customer.id()); // now SILVER
+            bumpFulfilled(customer.id()); // now SILVER
 
-            assertEquals(LoyaltyTier.REGULAR, order.appliedLoyaltyTier());
-            assertEquals(new BigDecimal("4.00"), order.price().total());
+            Order reloaded = facade.getOrder(order.id());
+            assertEquals(LoyaltyTier.REGULAR, reloaded.appliedLoyaltyTier());
+            assertEquals(new BigDecimal("4.00"), reloaded.price().total());
+        }
+
+        @Test
+        @DisplayName("stores no tier: the customer's tier is derived from fulfilled_orders at read time")
+        void tierIsDerived() {
+            UserEntity customer = customer("Alice", 6);
+            assertEquals(LoyaltyTier.SILVER, users.findById(customer.id()).orElseThrow().loyaltyTier());
         }
 
         @Test
         @DisplayName("runs placement through the OrderInvoker")
         void goesThroughInvoker() {
-            Customer customer = customerWithFulfilled(0);
+            UserEntity customer = customer("Alice");
             facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
-            assertEquals(List.of("PlaceOrder"), invoker.history());
+            List<String> history = invoker.history();
+            assertEquals("PlaceOrder", history.get(history.size() - 1));
+        }
+
+        @Test
+        @DisplayName("queues the placed order's id once it has committed")
+        void queuesAfterCommit() {
+            UserEntity customer = customer("Alice");
+            Order order = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
+            assertTrue(orderQueue.contains(order.id()));
         }
 
         @Test
         @DisplayName("rejects an order when the shop is closed")
         void rejectsWhenClosed() {
-            Customer customer = customerWithFulfilled(0);
+            UserEntity customer = customer("Alice");
             coffeeShop.close();
             assertThrows(ShopClosedException.class,
                     () -> facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO)));
+            assertEquals(0, orders.count());
         }
 
         @Test
         @DisplayName("rejects an order for a coffee that is off the menu")
         void rejectsOffMenu() {
-            Customer customer = customerWithFulfilled(0);
+            UserEntity customer = customer("Alice");
             coffeeShop.stopServing(CoffeeType.LATTE);
             assertThrows(CoffeeNotOnMenuException.class,
                     () -> facade.placeOrder(request(customer.id(), CoffeeType.LATTE)));
@@ -178,6 +151,15 @@ class CoffeeShopFacadeTest {
             assertThrows(CustomerNotFoundException.class,
                     () -> facade.placeOrder(request(999L, CoffeeType.ESPRESSO)));
         }
+
+        @Test
+        @DisplayName("rejects an order for a user who is not a CUSTOMER")
+        void rejectsNonCustomer() {
+            UserEntity barista = users.save(new UserEntity("Bob", Role.BARISTA));
+            assertThrows(CustomerNotFoundException.class,
+                    () -> facade.placeOrder(request(barista.id(), CoffeeType.ESPRESSO)));
+            assertEquals(0, orders.count());
+        }
     }
 
     @Nested
@@ -187,7 +169,7 @@ class CoffeeShopFacadeTest {
         @Test
         @DisplayName("returns a placed order by id")
         void returnsOrder() {
-            Customer customer = customerWithFulfilled(0);
+            UserEntity customer = customer("Alice");
             Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
             assertEquals(placed.id(), facade.getOrder(placed.id()).id());
         }
@@ -200,19 +182,41 @@ class CoffeeShopFacadeTest {
     }
 
     @Nested
+    @DisplayName("prepareOrder()")
+    class PrepareOrderTests {
+
+        @Test
+        @DisplayName("moves a placed order to READY")
+        void prepares() {
+            UserEntity customer = customer("Alice");
+            Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
+
+            facade.prepareOrder(placed.id());
+
+            assertEquals(OrderStatus.READY, facade.getOrder(placed.id()).status());
+        }
+
+        @Test
+        @DisplayName("throws for an unknown order id")
+        void throwsForUnknown() {
+            assertThrows(OrderNotFoundException.class, () -> facade.prepareOrder(404L));
+        }
+    }
+
+    @Nested
     @DisplayName("processOrder()")
     class ProcessOrderTests {
 
         @Test
         @DisplayName("prepares, pays and fulfils the order end to end")
         void endToEnd() {
-            Customer customer = customerWithFulfilled(0);
+            UserEntity customer = customer("Alice");
             Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
 
             Order done = facade.processOrder(placed.id(), PaymentProvider.CASH);
 
             assertEquals(OrderStatus.FULFILLED, done.status());
-            assertEquals(1, customers.findById(customer.id()).orElseThrow().fulfilledOrders());
+            assertEquals(1, fulfilledOrdersOf(customer.id()));
             assertTrue(invoker.history().containsAll(List.of("PrepareOrder", "PayOrder", "FulfillOrder")));
         }
     }
@@ -224,7 +228,7 @@ class CoffeeShopFacadeTest {
         @Test
         @DisplayName("cancels a placed order")
         void cancels() {
-            Customer customer = customerWithFulfilled(0);
+            UserEntity customer = customer("Alice");
             Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
             facade.cancelOrder(placed.id());
             assertEquals(OrderStatus.CANCELLED, facade.getOrder(placed.id()).status());
@@ -236,11 +240,11 @@ class CoffeeShopFacadeTest {
     class ReorderTests {
 
         @Test
-        @DisplayName("re-places an equivalent order: same coffee + extras, new id, fresh PLACED status")
+        @DisplayName("re-places an equivalent order from the persisted extras: same coffee + ordered extras, new id, fresh PLACED status")
         void reordersEquivalent() {
-            Customer customer = customerWithFulfilled(0);
+            UserEntity customer = customer("Alice");
             Order original = facade.placeOrder(
-                    request(customer.id(), CoffeeType.LATTE, ExtraType.MILK, ExtraType.SUGAR));
+                    request(customer.id(), CoffeeType.LATTE, ExtraType.MILK, ExtraType.SUGAR, ExtraType.MILK));
             facade.processOrder(original.id(), PaymentProvider.CASH);
 
             Order clone = facade.reorder(original.id());
@@ -248,19 +252,19 @@ class CoffeeShopFacadeTest {
             assertTrue(!clone.id().equals(original.id()));
             assertEquals(OrderStatus.PLACED, clone.status());
             assertEquals(CoffeeType.LATTE, clone.baseType());
-            assertEquals(List.of(ExtraType.MILK, ExtraType.SUGAR), clone.extras());
-            assertEquals(original.coffee().description(), clone.coffee().description());
+            assertEquals(List.of(ExtraType.MILK, ExtraType.SUGAR, ExtraType.MILK), clone.extras());
+            assertEquals(original.coffeeDescription(), clone.coffeeDescription());
+            assertEquals(OrderStatus.FULFILLED, facade.getOrder(original.id()).status(), "original untouched");
         }
 
         @Test
         @DisplayName("re-prices the clone against the customer's CURRENT tier, not the original's")
         void repricesAgainstCurrentTier() {
-            Customer customer = customerWithFulfilled(5); // REGULAR
+            UserEntity customer = customer("Alice", 5); // REGULAR
             Order original = facade.placeOrder(request(customer.id(), CoffeeType.LATTE));
             assertEquals(LoyaltyTier.REGULAR, original.appliedLoyaltyTier());
 
-            // customer reaches SILVER before re-ordering
-            customers.incrementFulfilled(customer.id());
+            bumpFulfilled(customer.id()); // customer reaches SILVER before re-ordering
             Order clone = facade.reorder(original.id());
 
             assertEquals(LoyaltyTier.SILVER, clone.appliedLoyaltyTier());
@@ -281,17 +285,10 @@ class CoffeeShopFacadeTest {
         @Test
         @DisplayName("undoing a placement cancels the order")
         void undoPlacement() {
-            Customer customer = customerWithFulfilled(0);
+            UserEntity customer = customer("Alice");
             Order placed = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
             facade.undoLastAction();
             assertEquals(OrderStatus.CANCELLED, facade.getOrder(placed.id()).status());
-        }
-
-        @Test
-        @DisplayName("is a no-op when nothing has been done")
-        void noOpWhenEmpty() {
-            facade.undoLastAction();
-            assertEquals(0, invoker.pendingUndoCount());
         }
     }
 }

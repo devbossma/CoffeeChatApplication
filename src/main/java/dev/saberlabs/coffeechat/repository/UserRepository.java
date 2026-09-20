@@ -3,6 +3,8 @@ package dev.saberlabs.coffeechat.repository;
 import dev.saberlabs.coffeechat.entity.UserEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -19,7 +21,8 @@ public interface UserRepository extends JpaRepository<UserEntity, Long> {
      *
      * @return the number of rows updated (0 if no user has that id, 1 otherwise)
      */
-    @Modifying(clearAutomatically = true)
+    @Transactional(propagation = Propagation.MANDATORY)
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("UPDATE UserEntity u SET u.fulfilledOrders = u.fulfilledOrders + 1 WHERE u.id = :id")
     int incrementFulfilledOrders(@Param("id") Long id);
 }

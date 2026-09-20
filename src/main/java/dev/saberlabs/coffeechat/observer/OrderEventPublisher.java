@@ -1,6 +1,6 @@
 package dev.saberlabs.coffeechat.observer;
 
-import dev.saberlabs.coffeechat.model.Order;
+import dev.saberlabs.coffeechat.entity.OrderEntity;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
@@ -28,7 +28,7 @@ public class OrderEventPublisher {
      * @param order the order, already moved to its new status
      * @param from  the status it held before
      */
-    public void publishStatusChange(Order order, OrderStatus from) {
+    public void publishStatusChange(OrderEntity order, OrderStatus from) {
         publisher.publishEvent(OrderStatusChangedEvent.of(order, from));
     }
 }

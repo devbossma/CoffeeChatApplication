@@ -54,6 +54,9 @@ public class UserEntity {
 
     public UserEntity(@NotNull String name, @NotNull Role role) {
         this.name = Objects.requireNonNull(name, "name cannot be null");
+        if (name.isBlank()) {
+            throw new IllegalArgumentException("name cannot be blank");
+        }
         this.role = Objects.requireNonNull(role, "role cannot be null");
         this.fulfilledOrders = 0;
     }

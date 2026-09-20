@@ -1,6 +1,6 @@
 package dev.saberlabs.coffeechat.controller;
 
-import dev.saberlabs.coffeechat.model.Customer;
+import dev.saberlabs.coffeechat.entity.UserEntity;
 import dev.saberlabs.coffeechat.service.CustomerService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -30,7 +30,7 @@ public class CustomerController {
     @PostMapping
     public ResponseEntity<CustomerResponse> create(@Valid @RequestBody CreateCustomerRequest request,
                                                    UriComponentsBuilder uriBuilder) {
-        Customer customer = customers.create(request.name());
+        UserEntity customer = customers.create(request.name());
         URI location = uriBuilder.path("/api/customers/{id}").buildAndExpand(customer.id()).toUri();
         return ResponseEntity.created(location).body(CustomerResponse.from(customer));
     }

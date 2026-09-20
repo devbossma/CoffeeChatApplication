@@ -1,8 +1,8 @@
 package dev.saberlabs.coffeechat.multithread;
 
 import dev.saberlabs.coffeechat.facade.CoffeeShopFacade;
-import dev.saberlabs.coffeechat.model.Order;
-import dev.saberlabs.coffeechat.support.TestOrders;
+import dev.saberlabs.coffeechat.facade.OrderNotFoundException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -64,8 +64,8 @@ class BaristaTest {
         loopThread.join(2000);
     }
 
-    private static Order order(long id) {
-        return TestOrders.placedEspresso(id, TestOrders.customer(id));
+    private static Long order(long id) {
+        return id;
     }
 
     @Nested
@@ -109,7 +109,7 @@ class BaristaTest {
         @DisplayName("a failure preparing one order does not stop the loop")
         void continuesAfterFailure() throws InterruptedException {
             CountDownLatch secondPrepared = new CountDownLatch(1);
-            doThrow(new IllegalStateException("boom")).when(facade).prepareOrder(1L);
+            doThrow(new RuntimeException("boom")).when(facade).prepareOrder(1L);
             org.mockito.Mockito.doAnswer(inv -> {
                 secondPrepared.countDown();
                 return null;
@@ -121,6 +121,75 @@ class BaristaTest {
 
             assertTrue(secondPrepared.await(2, TimeUnit.SECONDS), "loop must survive the first order's failure");
 
+            stopAndJoin();
+        }
+
+        @Test
+        @DisplayName("a lost @Version race is retried and the order is then prepared")
+        void retriesOnOptimisticConflict() throws InterruptedException {
+            CountDownLatch prepared = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+            org.mockito.Mockito.doAnswer(inv -> {
+                if (calls.incrementAndGet() == 1) {
+                    throw new OptimisticLockingFailureException("stale");
+                }
+                prepared.countDown();
+                return null;
+            }).when(facade).prepareOrder(1L);
+            startLoop();
+
+            orderQueue.enqueue(order(1L));
+
+            assertTrue(prepared.await(2, TimeUnit.SECONDS));
+            assertEquals(2, calls.get());
+            stopAndJoin();
+        }
+
+        @Test
+        @DisplayName("gives up after MAX_ATTEMPTS conflicting attempts but keeps serving later orders")
+        void givesUpAfterMaxAttempts() throws InterruptedException {
+            CountDownLatch secondPrepared = new CountDownLatch(1);
+            doThrow(new OptimisticLockingFailureException("stale")).when(facade).prepareOrder(1L);
+            doAnswerCountDown(secondPrepared, 2L);
+            startLoop();
+
+            orderQueue.enqueue(order(1L));
+            orderQueue.enqueue(order(2L));
+
+            assertTrue(secondPrepared.await(2, TimeUnit.SECONDS));
+            verify(facade, org.mockito.Mockito.times(Barista.MAX_ATTEMPTS)).prepareOrder(1L);
+            stopAndJoin();
+        }
+
+        @Test
+        @DisplayName("an order that is not found (e.g. an id that was never visible) is skipped without retrying")
+        void skipsMissingOrder() throws InterruptedException {
+            CountDownLatch secondPrepared = new CountDownLatch(1);
+            doThrow(new OrderNotFoundException(1L)).when(facade).prepareOrder(1L);
+            doAnswerCountDown(secondPrepared, 2L);
+            startLoop();
+
+            orderQueue.enqueue(order(1L));
+            orderQueue.enqueue(order(2L));
+
+            assertTrue(secondPrepared.await(2, TimeUnit.SECONDS));
+            verify(facade, org.mockito.Mockito.times(1)).prepareOrder(1L);
+            stopAndJoin();
+        }
+
+        @Test
+        @DisplayName("an order that is no longer preparable (illegal transition) is skipped without retrying")
+        void skipsNoLongerPreparableOrder() throws InterruptedException {
+            CountDownLatch secondPrepared = new CountDownLatch(1);
+            doThrow(new IllegalStateException("Illegal order transition: CANCELLED -> PREPARING")).when(facade).prepareOrder(1L);
+            doAnswerCountDown(secondPrepared, 2L);
+            startLoop();
+
+            orderQueue.enqueue(order(1L));
+            orderQueue.enqueue(order(2L));
+
+            assertTrue(secondPrepared.await(2, TimeUnit.SECONDS));
+            verify(facade, org.mockito.Mockito.times(1)).prepareOrder(1L);
             stopAndJoin();
         }
 
