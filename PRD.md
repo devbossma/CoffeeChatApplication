@@ -356,6 +356,67 @@ managers would defeat the boundary.
   plus an initial manager seeded from configuration (property-driven, off by default in tests).
 - A MANAGER's actions are not attributable in the audit trail (`changed_by` is NULL by rule).
 
+### 9.7 Chat core (Part 03 Step 5, as built)
+
+The chat *use cases* exist and are tested (`ChatService`); the REST controllers for them are Step 6. §9.3 is
+the intended surface; this section is what was actually built and why.
+
+**Pieces.**
+
+| Class | Job |
+|---|---|
+| `OrderCommandParser` | Pure. Decides whether a message is an order command and parses it. `/order` must be the first token (case-insensitive); `order latte ...`, `/orders`, `/ordering`, `please /order latte` are small talk. Unknown coffee, missing coffee and *all* unknown extras are reported. Duplicate extras are kept in typed order. |
+| `TextRules` | One definition of whitespace for everything typed: `Character.isWhitespace` plus U+00A0, U+2007, U+202F and the other Unicode space separators. Used by the parser and by message validation (a message of only Unicode spaces is blank; the database `btrim` CHECK only trims ASCII spaces and is the backstop, not the gate). |
+| `BaristaQueue` | In-memory, ids only, no I/O inside its lock: FIFO of waiting sessions and ready baristas. It *decides* (returns `Match`es); it never touches the database. |
+| `ChatSessionStore` | The **only writer of `chat_sessions` and `chat_messages`**. One `TransactionTemplate` transaction per method; status changes are conditional `UPDATE`s (`activateIfWaiting`, `endIfNotInactive`), so two racing writers cannot both win. |
+| `ChatMatchmaker` | Connects the two: queue decides, store makes it durable, and it compensates when they disagree. Not `@Transactional`, on purpose. |
+| `ChatRecovery` | On `ApplicationReadyEvent`: ACTIVE sessions restore their barista as BUSY, WAITING sessions rejoin oldest first. Idempotent, per-row failures logged and skipped, returns void. |
+| `ChatService` | Authorization plus orchestration; the only entry point the controllers will use. |
+
+**Matching invariants.**
+- A barista is READY, BUSY or absent, never two. Registering twice is a no-op; registering while BUSY cancels a pending "go offline when free".
+- Every queue operation ends by pairing the *front* waiting session with the *front* ready barista, so the oldest customer always meets the longest-ready barista. Ending a WAITING session removes it from the line.
+- The database backs the queue: `uq_chat_sessions_active_customer` (one non-INACTIVE session per customer) and `uq_chat_sessions_active_barista` (V2: one ACTIVE session per barista).
+- `chat_sessions.status` is written only through `ChatSessionStore`, and only from `ChatMatchmaker` (open, match, end).
+
+**Failure handling of the durable step** (the queue decision is tentative until the write commits):
+
+| Failure | Handling |
+|---|---|
+| Session no longer WAITING (ended in between) | Match dropped; barista back to the front of the ready line and paired with the next waiting customer, in one queue operation. |
+| Barista can never serve (`ChatBaristaUnavailableException`: no such user, not a BARISTA, already ACTIVE elsewhere) | Permanent: barista dropped from the queue; the customer keeps their place at the front. |
+| Anything else (transient) | Pair put back at the front of both lines, error logged, **not rethrown** (the caller's request already succeeded). The next operation starts with `pairPending()`, so no timer is needed, and a newcomer cannot overtake the failed pair. |
+
+**Authorization** (plain service-layer checks, as §9.6): `Actor.SYSTEM` is rejected everywhere (401). Only a
+CUSTOMER starts a chat; only a BARISTA registers as ready/offline; a session's customer, its barista or any
+MANAGER may end it or read its history; only its two participants may post, and only while it is ACTIVE.
+A MANAGER may not post. A barista's message starting with `/order` is plain text: only a customer's message
+is parsed.
+
+**Messages.** Content is stripped of Unicode spaces, must not be blank, at most 2000 characters (400 otherwise).
+History is ordered by `sent_at`, then `id`.
+
+**The `/order` path (Flow C)** is three independent transactions: T1 stores the customer's message (always kept);
+T2 is `CoffeeShopFacade.placeOrder` (the only door into the order lifecycle); T3 stores a SYSTEM confirmation
+linked to the order, retried up to 3 times, and if it still fails the order stands, an ERROR is logged, and the
+result still carries the order id (reply null). A refused order (shop closed, off the menu, malformed command)
+is *not* an error to the caller: the message was accepted and the reply says why nothing was ordered.
+
+**HTTP mapping** (`RestExceptionHandler`): already-open chat 409 (body carries `existingSessionId`), session not
+ACTIVE 409, not a participant 403, unknown session 404, invalid message 400, role 403, unknown actor 401.
+
+**Known limitations.**
+- **No idempotency key.** A retried identical `/order` message is a new message and places a second order. What is guaranteed: one accepted message stores exactly one CHAT_MESSAGE and places at most one order, even when T3 is retried.
+- Stale sessions never expire: a customer who walks away stays WAITING/ACTIVE until someone ends the session (and, with one open session per customer, cannot start another).
+- Ready baristas are not recoverable after a restart (nothing durable says who was ready) and must register again.
+- A message posted in the instant a session ends may still be stored (the ACTIVE check and the insert are two steps); harmless.
+- After a transient write failure a pair waits for the next chat operation rather than a timer.
+- `sent_at` is the application clock, so cross-transaction ordering is best-effort; the id breaks same-instant ties.
+
+**Step 6 notes (not built).** A barista needs a "my active session" read (today only the session id is known to
+the client); a customer needs to read their own session and its barista; staff creation and the property-seeded
+initial manager (§9.5 notes) are still required before a reviewer can exercise any of this over HTTP.
+
 ## 10. Testing (Part 04)
 
 - **Unit tests** (JUnit 5 + Mockito): one test class per service/component,

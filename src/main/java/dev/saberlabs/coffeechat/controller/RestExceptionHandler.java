@@ -1,6 +1,10 @@
 package dev.saberlabs.coffeechat.controller;
 
 import dev.saberlabs.coffeechat.command.UndoNotSupportedException;
+import dev.saberlabs.coffeechat.chat.ChatSessionAlreadyOpenException;
+import dev.saberlabs.coffeechat.chat.ChatSessionNotFoundException;
+import dev.saberlabs.coffeechat.chat.NotChatParticipantException;
+import dev.saberlabs.coffeechat.chat.SessionNotActiveException;
 import dev.saberlabs.coffeechat.facade.CoffeeNotOnMenuException;
 import dev.saberlabs.coffeechat.facade.CustomerNotFoundException;
 import dev.saberlabs.coffeechat.facade.OrderNotFoundException;
@@ -54,6 +58,29 @@ public class RestExceptionHandler {
     public ProblemDetail onConcurrentUpdate(OptimisticLockingFailureException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT,
                 "The order was modified concurrently; re-read it and try again");
+    }
+
+    /** The customer already has an open chat; the body carries that session's id so the client can go back to it. */
+    @ExceptionHandler(ChatSessionAlreadyOpenException.class)
+    public ProblemDetail onChatAlreadyOpen(ChatSessionAlreadyOpenException ex) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+        problem.setProperty("existingSessionId", ex.existingSessionId());
+        return problem;
+    }
+
+    @ExceptionHandler(SessionNotActiveException.class)
+    public ProblemDetail onSessionNotActive(SessionNotActiveException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
+    }
+
+    @ExceptionHandler(NotChatParticipantException.class)
+    public ProblemDetail onNotParticipant(NotChatParticipantException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.FORBIDDEN, ex.getMessage());
+    }
+
+    @ExceptionHandler(ChatSessionNotFoundException.class)
+    public ProblemDetail onChatNotFound(ChatSessionNotFoundException ex) {
+        return ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, ex.getMessage());
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
