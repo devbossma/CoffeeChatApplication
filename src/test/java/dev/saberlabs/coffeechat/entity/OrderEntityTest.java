@@ -208,7 +208,8 @@ class OrderEntityTest {
         @DisplayName("rejects an illegal jump")
         void rejectsIllegalJump() {
             OrderEntity order = newOrder();
-            assertThrows(IllegalStateException.class, () -> order.transitionTo(OrderStatus.READY));
+            assertThrows(dev.saberlabs.coffeechat.model.IllegalOrderTransitionException.class,
+                    () -> order.transitionTo(OrderStatus.READY));
             assertEquals(OrderStatus.PLACED, order.status());
         }
 

@@ -2,6 +2,7 @@ package dev.saberlabs.coffeechat.multithread;
 
 import dev.saberlabs.coffeechat.facade.CoffeeShopFacade;
 import dev.saberlabs.coffeechat.facade.OrderNotFoundException;
+import dev.saberlabs.coffeechat.model.IllegalOrderTransitionException;
 import jakarta.validation.constraints.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,6 +16,7 @@ import org.springframework.stereotype.Service;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -102,7 +104,12 @@ public class Barista {
             if (orderId == null) {
                 continue;
             }
-            prepare(barista, orderId);
+            try {
+                prepare(barista, orderId);
+            } catch (RuntimeException e) {
+                // Belt and braces: nothing may escape and end this loop, or that barista is gone for good.
+                log.error("{} hit an unhandled failure on order {}; continuing", barista, orderId, e);
+            }
         }
         log.info("{} stopped", barista);
     }
@@ -126,7 +133,9 @@ public class Barista {
                 unexpectedAttempts.remove(orderId);
                 log.warn("{} skipped order {}: not found", barista, orderId);
                 return;
-            } catch (IllegalStateException e) {
+            } catch (IllegalOrderTransitionException e) {
+                // Only this specific outcome is a quiet skip. Any other IllegalStateException (for
+                // instance the publisher's "no transaction" error) is a real bug and must not hide here.
                 unexpectedAttempts.remove(orderId);
                 log.info("{} skipped order {}: {}", barista, orderId, e.getMessage());
                 return;
@@ -156,7 +165,22 @@ public class Barista {
         }
         log.warn("{} failed unexpectedly on order {} (attempt {}/{}), re-queueing: {}",
                 barista, orderId, attempt, MAX_UNEXPECTED_ATTEMPTS, cause.getMessage());
-        retryScheduler.schedule(() -> orderQueue.enqueue(orderId), retryDelayMs, TimeUnit.MILLISECONDS);
+        try {
+            retryScheduler.schedule(() -> reenqueue(orderId), retryDelayMs, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException e) {
+            // The scheduler is already shut down (the application is closing): the order stays PLACED
+            // and startup recovery will pick it up.
+            log.error("{} could not schedule a retry for order {} (shutting down); it stays PLACED for startup recovery",
+                    barista, orderId);
+        }
+    }
+
+    private void reenqueue(Long orderId) {
+        try {
+            orderQueue.enqueue(orderId);
+        } catch (RuntimeException e) {
+            log.error("Could not re-enqueue order {} for retry; it stays PLACED until startup recovery", orderId, e);
+        }
     }
 
     @PreDestroy

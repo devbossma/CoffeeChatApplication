@@ -222,7 +222,8 @@ class OrderCommandTest extends AbstractIntegrationTest {
             Long id = orderAt(OrderStatus.PLACED);
             invoker.executeCommand(prepare(id));
 
-            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast());
+            assertThrows(UndoNotSupportedException.class, prepare(id)::undo);
+            assertNull(invoker.undoLast(), "preparation is a barrier, so there is nothing to undo");
 
             assertEquals(OrderStatus.READY, statusOf(id));
         }
@@ -376,7 +377,8 @@ class OrderCommandTest extends AbstractIntegrationTest {
             PayOrderCommand command = pay(id, PaymentProvider.CASH, gateways);
             invoker.executeCommand(command);
 
-            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast());
+            assertThrows(UndoNotSupportedException.class, command::undo);
+            assertNull(invoker.undoLast(), "payment is a barrier, so there is nothing to undo");
 
             assertTrue(command.result().isPaid(), "the payment result is untouched");
             assertEquals(1, payments.count());
@@ -481,9 +483,11 @@ class OrderCommandTest extends AbstractIntegrationTest {
         void undoNotSupported() {
             Long id = orderAt(OrderStatus.READY);
             markPaid(id);
-            invoker.executeCommand(fulfill(id));
+            FulfillOrderCommand command = fulfill(id);
+            invoker.executeCommand(command);
 
-            assertThrows(UndoNotSupportedException.class, () -> invoker.undoLast());
+            assertThrows(UndoNotSupportedException.class, command::undo);
+            assertNull(invoker.undoLast(), "fulfilment is a barrier, so there is nothing to undo");
 
             assertEquals(OrderStatus.FULFILLED, statusOf(id));
             assertEquals(1, fulfilledOrdersOf(customer.id()));

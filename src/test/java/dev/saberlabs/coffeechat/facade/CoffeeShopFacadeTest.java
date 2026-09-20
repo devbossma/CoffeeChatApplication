@@ -373,6 +373,26 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
     class UndoLastActionTests {
 
         @Test
+        @DisplayName("place, prepare, pay, then undo: nothing is undone (payment is a barrier), the order keeps its state, and a later placement can be undone again")
+        void undoAfterPaymentIsDefinedAndDoesNotJam() {
+            UserEntity customer = customer("Alice");
+            Order first = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
+            facade.prepareOrder(first.id());
+            facade.payOrder(first.id(), PaymentProvider.CASH);
+
+            facade.undoLastAction();
+
+            assertEquals(OrderStatus.READY, facade.getOrder(first.id()).status());
+            assertEquals(1, payments.count());
+
+            Order second = facade.placeOrder(request(customer.id(), CoffeeType.ESPRESSO));
+            facade.undoLastAction();
+            assertEquals(OrderStatus.CANCELLED, facade.getOrder(second.id()).status());
+            assertEquals(OrderStatus.READY, facade.getOrder(first.id()).status());
+        }
+
+
+        @Test
         @DisplayName("undoing a placement cancels the order")
         void undoPlacement() {
             UserEntity customer = customer("Alice");

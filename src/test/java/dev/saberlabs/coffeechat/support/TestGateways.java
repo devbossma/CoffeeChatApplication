@@ -25,10 +25,20 @@ public final class TestGateways {
 
     /** Cash works normally but every charge that reaches the gateway increments {@code charges}. */
     public static PaymentGatewayResolver countingCash(AtomicInteger charges) {
+        return countingCash(charges, () -> { });
+    }
+
+    /**
+     * As {@link #countingCash(AtomicInteger)}, but {@code beforeCharge} runs inside the gateway call
+     * (i.e. while the caller holds its transaction and the order's row lock), which lets a test hold the
+     * first payer there until it can prove a second payer is waiting.
+     */
+    public static PaymentGatewayResolver countingCash(AtomicInteger charges, Runnable beforeCharge) {
         return new PaymentGatewayResolver(List.of(new PayPalAdapter(), new StripeAdapter(), new CashPaymentAdapter() {
             @Override
             protected PaymentResult doPay(String orderRef, BigDecimal amount) {
                 charges.incrementAndGet();
+                beforeCharge.run();
                 return super.doPay(orderRef, amount);
             }
         }));

@@ -9,7 +9,12 @@ import dev.saberlabs.coffeechat.model.LoyaltyTier;
 import dev.saberlabs.coffeechat.model.Order;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 import dev.saberlabs.coffeechat.model.PriceBreakdown;
+import dev.saberlabs.coffeechat.facade.OrderStateConflictException;
 import dev.saberlabs.coffeechat.repository.OrderRepository;
+import jakarta.persistence.EntityManager;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.PessimisticLockingFailureException;
 import jakarta.validation.constraints.NotNull;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -34,10 +39,21 @@ public class OrderService {
 
     private final OrderRepository orders;
     private final OrderMapper mapper;
+    private final EntityManager entityManager;
+    private final long paymentLockTimeoutMs;
 
-    public OrderService(@NotNull OrderRepository orders, @NotNull OrderMapper mapper) {
+    @Autowired
+    public OrderService(@NotNull OrderRepository orders,
+                        @NotNull OrderMapper mapper,
+                        @NotNull EntityManager entityManager,
+                        @Value("${coffeeshop.payment-lock-timeout-ms:5000}") long paymentLockTimeoutMs) {
         this.orders = Objects.requireNonNull(orders, "orders cannot be null");
         this.mapper = Objects.requireNonNull(mapper, "mapper cannot be null");
+        this.entityManager = Objects.requireNonNull(entityManager, "entityManager cannot be null");
+        if (paymentLockTimeoutMs <= 0) {
+            throw new IllegalArgumentException("payment lock timeout must be positive: " + paymentLockTimeoutMs);
+        }
+        this.paymentLockTimeoutMs = paymentLockTimeoutMs;
     }
 
     /** Inserts a new order at {@code PLACED}; the caller has already derived tier and price. */
@@ -66,12 +82,28 @@ public class OrderService {
      * Loads the order with a row lock, for payment: serialises concurrent payers of one order before
      * the gateway is called.
      *
-     * @throws OrderNotFoundException if no order has that id
+     * <p><b>Trade-off, by design.</b> The lock is held for the rest of the payment transaction,
+     * including the gateway call. That is acceptable for the in-process simulated gateways here and
+     * would need a redesign for a real network gateway. A payer blocked on the lock also holds a pooled
+     * connection, so many concurrent payers of one order can consume the pool; the wait is therefore
+     * bounded by {@code coffeeshop.payment-lock-timeout-ms} (a PostgreSQL {@code lock_timeout} scoped to
+     * this transaction), after which the caller gets a 409 instead of waiting forever.
+     *
+     * @throws OrderNotFoundException      if no order has that id
+     * @throws OrderStateConflictException if another request is holding the order's lock past the timeout
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public OrderEntity requireForPayment(@NotNull Long orderId) {
         Objects.requireNonNull(orderId, "orderId cannot be null");
-        return orders.findForUpdateById(orderId).orElseThrow(() -> new OrderNotFoundException(orderId));
+        entityManager.createNativeQuery("select set_config('lock_timeout', :ms, true)")
+                .setParameter("ms", Long.toString(paymentLockTimeoutMs))
+                .getSingleResult();
+        try {
+            return orders.findForUpdateById(orderId).orElseThrow(() -> new OrderNotFoundException(orderId));
+        } catch (PessimisticLockingFailureException e) {
+            throw new OrderStateConflictException(
+                    "Order " + orderId + " is being paid by another request; try again shortly");
+        }
     }
 
     /** Forces pending changes to the database now, so the {@code @Version} check fires here. */

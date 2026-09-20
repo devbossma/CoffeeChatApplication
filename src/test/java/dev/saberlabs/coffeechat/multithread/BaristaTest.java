@@ -2,6 +2,7 @@ package dev.saberlabs.coffeechat.multithread;
 
 import dev.saberlabs.coffeechat.facade.CoffeeShopFacade;
 import dev.saberlabs.coffeechat.facade.OrderNotFoundException;
+import dev.saberlabs.coffeechat.model.OrderStatus;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -165,6 +166,64 @@ class BaristaTest {
         }
 
         @Test
+        @DisplayName("an unrelated IllegalStateException (e.g. the publisher's no-transaction error) is NOT swallowed as a quiet skip: it is treated as unexpected and retried")
+        void unrelatedIllegalStateIsNotHidden() throws InterruptedException {
+            barista = new Barista(orderQueue, facade, 10);
+            CountDownLatch prepared = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+            org.mockito.Mockito.doAnswer(inv -> {
+                if (calls.incrementAndGet() == 1) {
+                    throw new IllegalStateException("An order status change must be published inside a transaction");
+                }
+                prepared.countDown();
+                return null;
+            }).when(facade).prepareOrder(1L);
+            startLoop();
+
+            orderQueue.enqueue(order(1L));
+
+            assertTrue(prepared.await(3, TimeUnit.SECONDS), "the order was retried, not dropped as an INFO skip");
+            assertEquals(2, calls.get());
+            stopAndJoin();
+        }
+
+        @Test
+        @DisplayName("if the retry scheduler is already shut down, the failure is logged and the loop survives to serve later orders")
+        void schedulerShutDownDoesNotKillTheLoop() throws InterruptedException {
+            barista = new Barista(orderQueue, facade, 10);
+            barista.closeRetryScheduler();
+            CountDownLatch secondPrepared = new CountDownLatch(1);
+            doThrow(new RuntimeException("hiccup")).when(facade).prepareOrder(1L);
+            doAnswerCountDown(secondPrepared, 2L);
+            startLoop();
+
+            orderQueue.enqueue(order(1L));
+            orderQueue.enqueue(order(2L));
+
+            assertTrue(secondPrepared.await(2, TimeUnit.SECONDS), "the loop is still alive");
+            assertTrue(loopThread.isAlive());
+            stopAndJoin();
+        }
+
+        @Test
+        @DisplayName("a failure while re-enqueueing (queue full and interrupted) is logged, not swallowed silently, and does not kill anything")
+        void failedReenqueueDoesNotKillAnything() throws InterruptedException {
+            OrderQueue tiny = new OrderQueue(1);
+            barista = new Barista(tiny, facade, 5);
+            CountDownLatch secondPrepared = new CountDownLatch(1);
+            doThrow(new RuntimeException("hiccup")).when(facade).prepareOrder(1L);
+            doAnswerCountDown(secondPrepared, 2L);
+            startLoop();
+
+            tiny.enqueue(1L);
+            org.awaitility.Awaitility.await().until(tiny::isEmpty);
+            tiny.enqueue(2L); // fills the queue so the scheduled re-enqueue of order 1 has to wait for space
+
+            assertTrue(secondPrepared.await(2, TimeUnit.SECONDS));
+            stopAndJoin();
+        }
+
+        @Test
         @DisplayName("an unexpected failure twice, then success: the order is re-queued each time and finally prepared")
         void unexpectedFailureRequeuedThenSucceeds() throws InterruptedException {
             barista = new Barista(orderQueue, facade, 10);
@@ -270,7 +329,7 @@ class BaristaTest {
         @DisplayName("an order that is no longer preparable (illegal transition) is skipped without retrying")
         void skipsNoLongerPreparableOrder() throws InterruptedException {
             CountDownLatch secondPrepared = new CountDownLatch(1);
-            doThrow(new IllegalStateException("Illegal order transition: CANCELLED -> PREPARING")).when(facade).prepareOrder(1L);
+            doThrow(new dev.saberlabs.coffeechat.model.IllegalOrderTransitionException(OrderStatus.CANCELLED, OrderStatus.PREPARING)).when(facade).prepareOrder(1L);
             doAnswerCountDown(secondPrepared, 2L);
             startLoop();
 

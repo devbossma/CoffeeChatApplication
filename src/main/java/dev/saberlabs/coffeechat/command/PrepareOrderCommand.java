@@ -55,6 +55,11 @@ public class PrepareOrderCommand extends AbstractOrderCommand {
     }
 
     @Override
+    public boolean undoable() {
+        return false;
+    }
+
+    @Override
     public String name() {
         return "PrepareOrder";
     }

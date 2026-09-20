@@ -61,6 +61,11 @@ public class PayOrderCommand implements OrderCommand {
     }
 
     @Override
+    public boolean undoable() {
+        return false;
+    }
+
+    @Override
     public String name() {
         return "PayOrder";
     }

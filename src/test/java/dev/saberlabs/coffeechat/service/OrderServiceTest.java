@@ -37,6 +37,7 @@ class OrderServiceTest extends AbstractIntegrationTest {
     @Autowired OrderService service;
     @Autowired TransactionTemplate tx;
     @Autowired EntityManagerFactory entityManagerFactory;
+    @Autowired jakarta.persistence.EntityManager entityManager;
 
     private OrderEntity createInTx(UserEntity customer, List<ExtraType> extras) {
         return tx.execute(status -> service.create(customer, CoffeeType.LATTE, extras, LoyaltyTier.SILVER, PRICE));
@@ -102,6 +103,64 @@ class OrderServiceTest extends AbstractIntegrationTest {
         @DisplayName("rejects a null id")
         void rejectsNull() {
             assertThrows(NullPointerException.class, () -> tx.execute(status -> service.require(null)));
+        }
+    }
+
+    @Nested
+    @DisplayName("requireForPayment() (row lock with a timeout)")
+    class RequireForPaymentTests {
+
+        @Test
+        @DisplayName("loads the order inside a transaction")
+        void loads() {
+            Long id = createInTx(customer("Alice"), List.of()).id();
+            assertEquals(id, tx.execute(status -> service.requireForPayment(id).id()));
+        }
+
+        @Test
+        @DisplayName("throws OrderNotFoundException for an unknown id")
+        void unknown() {
+            assertThrows(OrderNotFoundException.class, () -> tx.execute(status -> service.requireForPayment(404L)));
+        }
+
+        @Test
+        @DisplayName("requires an existing transaction (MANDATORY)")
+        void requiresTransaction() {
+            assertThrows(IllegalTransactionStateException.class, () -> service.requireForPayment(1L));
+        }
+
+        @Test
+        @DisplayName("a payer that cannot get the row lock within the timeout gets a 409-mapped OrderStateConflictException instead of waiting forever")
+        void lockTimeoutBecomesConflict() throws Exception {
+            Long id = createInTx(customer("Alice"), List.of()).id();
+            OrderService impatient = new OrderService(orders, new OrderMapper(new dev.saberlabs.coffeechat.factory.CoffeeFactory()), entityManager, 300);
+            java.util.concurrent.CountDownLatch holding = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.ExecutorService holder = java.util.concurrent.Executors.newSingleThreadExecutor();
+            try {
+                var held = holder.submit(() -> tx.executeWithoutResult(status -> {
+                    service.requireForPayment(id);
+                    holding.countDown();
+                    try {
+                        release.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }));
+                assertTrue(holding.await(10, java.util.concurrent.TimeUnit.SECONDS));
+
+                long started = System.nanoTime();
+                assertThrows(dev.saberlabs.coffeechat.facade.OrderStateConflictException.class,
+                        () -> tx.execute(status -> impatient.requireForPayment(id)));
+                long waitedMs = (System.nanoTime() - started) / 1_000_000;
+
+                assertTrue(waitedMs < 5_000, "gave up after roughly the timeout, not the holder's 10s: " + waitedMs + "ms");
+                release.countDown();
+                held.get(10, java.util.concurrent.TimeUnit.SECONDS);
+            } finally {
+                release.countDown();
+                holder.shutdownNow();
+            }
         }
     }
 
@@ -203,8 +262,17 @@ class OrderServiceTest extends AbstractIntegrationTest {
         @Test
         @DisplayName("rejects null collaborators")
         void rejectsNulls() {
-            assertThrows(NullPointerException.class, () -> new OrderService(null, new OrderMapper(new dev.saberlabs.coffeechat.factory.CoffeeFactory())));
-            assertThrows(NullPointerException.class, () -> new OrderService(orders, null));
+            OrderMapper mapper = new OrderMapper(new dev.saberlabs.coffeechat.factory.CoffeeFactory());
+            assertThrows(NullPointerException.class, () -> new OrderService(null, mapper, entityManager, 1000));
+            assertThrows(NullPointerException.class, () -> new OrderService(orders, null, entityManager, 1000));
+            assertThrows(NullPointerException.class, () -> new OrderService(orders, mapper, null, 1000));
+        }
+
+        @Test
+        @DisplayName("rejects a non-positive payment lock timeout")
+        void rejectsBadTimeout() {
+            OrderMapper mapper = new OrderMapper(new dev.saberlabs.coffeechat.factory.CoffeeFactory());
+            assertThrows(IllegalArgumentException.class, () -> new OrderService(orders, mapper, entityManager, 0));
         }
     }
 }

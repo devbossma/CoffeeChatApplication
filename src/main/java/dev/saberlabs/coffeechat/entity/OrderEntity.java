@@ -2,6 +2,7 @@ package dev.saberlabs.coffeechat.entity;
 
 import dev.saberlabs.coffeechat.model.CoffeeType;
 import dev.saberlabs.coffeechat.model.ExtraType;
+import dev.saberlabs.coffeechat.model.IllegalOrderTransitionException;
 import dev.saberlabs.coffeechat.model.LoyaltyTier;
 import dev.saberlabs.coffeechat.model.OrderStatus;
 import dev.saberlabs.coffeechat.model.PriceBreakdown;
@@ -177,7 +178,7 @@ public class OrderEntity {
     public void transitionTo(@NotNull OrderStatus target) {
         Objects.requireNonNull(target, "target status cannot be null");
         if (!status.canTransitionTo(target)) {
-            throw new IllegalStateException("Illegal order transition: " + status + " -> " + target);
+            throw new IllegalOrderTransitionException(status, target);
         }
         this.status = target;
         this.updatedAt = Instant.now();

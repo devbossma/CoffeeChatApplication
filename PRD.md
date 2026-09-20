@@ -135,8 +135,8 @@ dev.saberlabs.coffeechat
 | Old approach | Spring approach |
 |---|---|
 | `CoffeeShop.open()` manually starts N `Barista` `Thread`s pulling from a `BlockingQueue`-backed `OrderQueue` | Keep `OrderQueue` as a thread-safe `BlockingQueue<Order>`-backed component (the assignment explicitly asks for this shape), but replace manually-started `Thread`s with `@Async` methods on a `Barista` `@Service`, backed by a configured `ThreadPoolTaskExecutor` bean (`@EnableAsync`, a `@Bean TaskExecutor` with a bounded pool + queue capacity). |
-| `Barista.run()` loop blocks on `orderQueue.dequeue()` | An `@Async` `prepareOrder(Order)` method is invoked once per dequeued order (a small `@Scheduled` or event-driven poller pulls from the queue and dispatches), instead of one thread owning an infinite loop. Evaluate both against the assignment's "process orders asynchronously using `@Async`" wording before committing — the poller shape is likely the more idiomatic fit. |
-| Order status change calls `notifyObservers` directly | Order status change publishes `OrderStatusChangedEvent`; a listener sends the "order ready" notification. Async listeners (`@Async @EventListener`) if the notification itself shouldn't block the preparation thread. |
+| `Barista.run()` loop blocks on `orderQueue.dequeue()` | Resolved (CLAUDE.md, PRD 11.1): N `@Async` consumer loops on a bounded `ThreadPoolTaskExecutor`, one per pool slot, each waiting on a *timed* poll of the queue so a stop flag is noticed without an interrupt; not a `@Scheduled` poller. See 8.1 for the as-built behaviour. |
+| Order status change calls `notifyObservers` directly | Order status change publishes `OrderStatusChangedEvent`; a listener sends the "order ready" notification. As built (9.5): the audit listener runs inside the transaction; notification and queueing are `AFTER_COMMIT`. |
 | `CoffeeShop`'s synchronized order list + `AtomicInteger` id counters | Kept conceptually (thread-safe order tracking still needed), but once orders are JPA-backed (§9), persistence itself gives most of the safety; keep in-memory counters only where the DB doesn't already provide an equivalent (e.g. a DB sequence/identity column replaces `orderIdCounter`). |
 
 ### 8.1 As built (after Part 03 Step 3)
@@ -274,6 +274,13 @@ a pessimistic row lock on the order taken **before** the gateway call, so the se
 rejected without being charged (409). `facade.processOrder` stops on a FAILED payment and returns an
 `OrderOutcome`.
 
+*The gateway call runs under that row lock, by design.* That is acceptable for the in-process simulated
+gateways here and would need a redesign for a real network gateway (charge outside the lock, or an
+idempotency key). A payer blocked on the lock holds a pooled connection, so many concurrent payers of
+one order can consume the pool; the wait is therefore bounded by `coffeeshop.payment-lock-timeout-ms`
+(default 5000; a PostgreSQL `lock_timeout` scoped to the transaction), after which the payer gets a
+**409** (`OrderStateConflictException`) instead of waiting forever.
+
 **Fulfilment.** Requires READY **and a PAID payment**, then increments `fulfilled_orders` with an atomic
 SQL update in the same transaction, after the status change has been flushed (so the `@Version` check
 fires first): exactly once per order. Unpaid fulfilment is 409 because loyalty tiers derive from
@@ -281,7 +288,10 @@ fires first): exactly once per order. Unpaid fulfilment is 409 because loyalty t
 processor, §4).
 
 **Undo is a limited convenience, not a general reversal.** Only a placement that is still PLACED (it
-cancels) and the cancellation of a READY order can be undone. Undo of Pay, Fulfil and Prepare (and of
+cancels) and the cancellation of a READY order can be undone. Executing a command that cannot be undone
+(payment, fulfilment, preparation) is a **barrier**: `OrderInvoker` empties its undo stack, so the
+stack never jams behind an un-undoable command, `undoLast()` then returns nothing, and later
+undoable commands work again; the stack is also capped. Undo of Pay, Fulfil and Prepare (and of
 cancelling a PLACED order) throws `UndoNotSupportedException` (409): reversing them has effects outside
 the order row (a payment, the loyalty count, the queue) that are not reversed.
 

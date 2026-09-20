@@ -67,22 +67,39 @@ class OrderConcurrencyTest extends AbstractIntegrationTest {
         return placed.id();
     }
 
+    /** True when some other database session is blocked waiting for a row lock ({@code FOR UPDATE}). */
+    private boolean aSessionIsBlockedOnARowLock() {
+        Integer blocked = jdbc.queryForObject(
+                "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE '%for%update%'",
+                Integer.class);
+        return blocked != null && blocked > 0;
+    }
+
     @Nested
     @DisplayName("two threads paying the same order")
     class DoublePayTests {
 
         @Test
-        @DisplayName("the customer is charged once: exactly one payment row, one gateway call, the loser gets a conflict")
+        @DisplayName("the customer is charged once, and the two payers PROVABLY overlapped: the first is held inside the gateway until the second is blocked on the row lock")
         void chargedOnce() throws Exception {
             AtomicInteger charges = new AtomicInteger();
-            CoffeeShopFacade facade = facadeWith(TestGateways.countingCash(charges));
+            java.util.concurrent.atomic.AtomicBoolean overlapObserved = new java.util.concurrent.atomic.AtomicBoolean();
+            CoffeeShopFacade facade = facadeWith(TestGateways.countingCash(charges, () -> {
+                // Runs inside the gateway call: the lock holder waits here until a second session is
+                // genuinely blocked on the order's row lock, so the test cannot pass by the payers
+                // simply running one after the other.
+                org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(15))
+                        .until(OrderConcurrencyTest.this::aSessionIsBlockedOnARowLock);
+                overlapObserved.set(true);
+            }));
             Long id = readyOrderId(facade, customer("Alice"));
 
             List<Object> outcomes = raceTogether(2, () -> facade.payOrder(id, PaymentProvider.CASH));
 
+            assertTrue(overlapObserved.get(), "a second payer was blocked on the lock while the first was charging");
             assertEquals(1, failures(outcomes), "exactly one payer is rejected");
-            assertTrue(outcomes.stream().filter(o -> o instanceof Exception)
-                    .allMatch(o -> o instanceof OrderStateConflictException), outcomes.toString());
+            Object loser = outcomes.stream().filter(o -> o instanceof Exception).findFirst().orElseThrow();
+            assertTrue(loser instanceof OrderStateConflictException, "the loser is told the order is already paid: " + loser);
             assertEquals(1, charges.get(), "the gateway is called exactly once");
             assertEquals(1, payments.count());
         }
@@ -106,6 +123,10 @@ class OrderConcurrencyTest extends AbstractIntegrationTest {
             });
 
             assertEquals(1, failures(outcomes), "exactly one fulfilment wins: " + outcomes);
+            Object loser = outcomes.stream().filter(o -> o instanceof Exception).findFirst().orElseThrow();
+            assertTrue(loser instanceof org.springframework.dao.OptimisticLockingFailureException
+                            || loser instanceof dev.saberlabs.coffeechat.model.IllegalOrderTransitionException,
+                    "the loser lost the version race or found it already fulfilled: " + loser);
             assertEquals(1, fulfilledOrdersOf(customer.id()));
             assertEquals(OrderStatus.FULFILLED, facade.getOrder(id).status());
             assertEquals(1, history.findByOrderIdOrderByChangedAtAscIdAsc(id).stream()
@@ -118,8 +139,8 @@ class OrderConcurrencyTest extends AbstractIntegrationTest {
     class CancelVersusPrepareTests {
 
         @Test
-        @DisplayName("exactly one wins, the final status is legal and the audit trail matches it")
-        void oneWinner() throws Exception {
+        @DisplayName("whatever the interleaving, the final status is legal, no unexpected error occurs, and the audit trail is continuous and matches the stored status")
+        void consistentWhateverTheInterleaving() throws Exception {
             CoffeeShopFacade facade = facadeWith(TestGateways.countingCash(new AtomicInteger()));
             Order placed = facade.placeOrder(new PlaceOrderRequest(customer("Alice").id(), CoffeeType.ESPRESSO, List.of()));
             AtomicInteger which = new AtomicInteger();
@@ -133,16 +154,21 @@ class OrderConcurrencyTest extends AbstractIntegrationTest {
                 return "done";
             });
 
+            // Both succeeding is legal (prepare, then cancel a READY order); a failure must be one of
+            // the two expected losing-a-race errors, never anything else.
+            assertTrue(outcomes.stream().filter(o -> o instanceof Exception).allMatch(o ->
+                            o instanceof org.springframework.dao.OptimisticLockingFailureException
+                                    || o instanceof dev.saberlabs.coffeechat.model.IllegalOrderTransitionException),
+                    "unexpected failure type in " + outcomes);
+            assertTrue(outcomes.stream().anyMatch(o -> !(o instanceof Exception)), "at least one of the two succeeded");
+
             OrderStatus finalStatus = facade.getOrder(placed.id()).status();
             assertTrue(finalStatus == OrderStatus.CANCELLED || finalStatus == OrderStatus.READY,
                     "final status " + finalStatus + " outcomes " + outcomes);
             var trail = history.findByOrderIdOrderByChangedAtAscIdAsc(placed.id());
             assertEquals(finalStatus, trail.get(trail.size() - 1).toStatus(), "audit agrees with state");
             for (int i = 1; i < trail.size(); i++) {
-                assertEquals(trail.get(i - 1).toStatus(), trail.get(i).fromStatus());
-            }
-            if (finalStatus == OrderStatus.READY) {
-                assertEquals(1, failures(outcomes), "the losing cancel failed");
+                assertEquals(trail.get(i - 1).toStatus(), trail.get(i).fromStatus(), "audit is continuous");
             }
         }
     }

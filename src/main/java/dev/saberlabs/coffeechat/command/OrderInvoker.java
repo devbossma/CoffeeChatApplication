@@ -23,11 +23,19 @@ import java.util.Objects;
  *
  * <p>The in-memory history/undo stack is a lightweight recent-activity aid, not the audit trail
  * ({@code OrderStatusHistoryEntity} is).
+ *
+ * <p><b>Undo is a limited convenience.</b> Only undoable commands ({@link OrderCommand#undoable()})
+ * are pushed; executing one that is not (payment, fulfilment, preparation) is a <em>barrier</em> that
+ * empties the stack, because anything before it can no longer be safely reversed. That keeps the top of
+ * the stack always something that can actually be undone (it cannot jam behind an un-undoable command)
+ * and, together with the cap, keeps the stack bounded. A command whose undo turns out to be
+ * unsupported at that moment (the order has since moved on) is dropped from the stack and the
+ * exception propagates.
  */
 @Service
 public class OrderInvoker {
 
-    private static final int MAX_HISTORY = 100;
+    static final int MAX_HISTORY = 100;
 
     private final TransactionTemplate transaction;
     private final Deque<OrderCommand> history = new ArrayDeque<>();
@@ -50,14 +58,23 @@ public class OrderInvoker {
             if (history.size() > MAX_HISTORY) {
                 history.removeFirst();
             }
-            undoStack.push(command);
+            if (command.undoable()) {
+                undoStack.push(command);
+                if (undoStack.size() > MAX_HISTORY) {
+                    undoStack.removeLast();
+                }
+            } else {
+                undoStack.clear();
+            }
         }
     }
 
     /**
-     * Undoes the most recently executed command, if any, in its own transaction.
+     * Undoes the most recently executed undoable command, if any, in its own transaction.
      *
-     * @return the command that was undone, or {@code null} if there was nothing to undo
+     * @return the command that was undone, or {@code null} if there was nothing to undo (including
+     *         when the last thing done was a barrier command such as a payment)
+     * @throws UndoNotSupportedException if the order has moved on since (the command is then dropped)
      */
     public OrderCommand undoLast() {
         OrderCommand command;
@@ -67,7 +84,14 @@ public class OrderInvoker {
         if (command == null) {
             return null;
         }
-        transaction.executeWithoutResult(status -> command.undo());
+        try {
+            transaction.executeWithoutResult(status -> command.undo());
+        } catch (UndoNotSupportedException e) {
+            synchronized (this) {
+                undoStack.remove(command);
+            }
+            throw e;
+        }
         synchronized (this) {
             undoStack.remove(command);
         }

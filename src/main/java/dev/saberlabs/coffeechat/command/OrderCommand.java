@@ -21,6 +21,16 @@ public interface OrderCommand {
     String name();
 
     /**
+     * Whether this kind of command can ever be undone. A command that cannot (payment, fulfilment,
+     * preparation: their reversal has effects outside the order row) is a <em>barrier</em> for
+     * {@code OrderInvoker}: nothing executed before it can be safely undone any more, so executing it
+     * empties the undo stack instead of leaving a command on top that can never be undone.
+     */
+    default boolean undoable() {
+        return true;
+    }
+
+    /**
      * The user this command acts on behalf of, recorded as {@code order_status_history.changed_by};
      * {@code null} means an automated/system action.
      *
