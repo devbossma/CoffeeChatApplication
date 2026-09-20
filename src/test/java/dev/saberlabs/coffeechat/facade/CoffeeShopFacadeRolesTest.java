@@ -347,6 +347,28 @@ class CoffeeShopFacadeRolesTest extends AbstractIntegrationTest {
     }
 
     @Nested
+    @DisplayName("illegal transitions")
+    class IllegalTransitionTests {
+
+        @Test
+        @DisplayName("preparing a READY order and cancelling a FULFILLED one throw IllegalOrderTransitionException and change nothing")
+        void illegal() {
+            Long readyId = ready();
+            Trace beforeReady = trace(readyId);
+            assertThrows(dev.saberlabs.coffeechat.model.IllegalOrderTransitionException.class,
+                    () -> facade.prepareOrder(readyId, Actor.user(barista.id())));
+            assertEquals(beforeReady, trace(readyId));
+
+            Long fulfilledId = readyAndPaid();
+            facade.fulfillOrder(fulfilledId, Actor.user(barista.id()));
+            Trace beforeCancel = trace(fulfilledId);
+            assertThrows(dev.saberlabs.coffeechat.model.IllegalOrderTransitionException.class,
+                    () -> facade.cancelOrder(fulfilledId, Actor.user(barista.id())));
+            assertEquals(beforeCancel, trace(fulfilledId));
+        }
+    }
+
+    @Nested
     @DisplayName("openShop() / closeShop()")
     class ShopTests {
 

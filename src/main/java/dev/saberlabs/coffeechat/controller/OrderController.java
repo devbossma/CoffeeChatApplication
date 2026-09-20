@@ -57,21 +57,21 @@ public class OrderController {
     @PostMapping("/{id}/prepare")
     public OrderResponse prepare(@PathVariable Long id, Actor actor) {
         facade.prepareOrder(id, actor);
-        return OrderResponse.from(facade.getOrder(id));
+        return OrderResponse.from(facade.getOrder(id, actor));
     }
 
     /** Staff: READY to FULFILLED; the order must have been paid. */
     @PostMapping("/{id}/fulfil")
     public OrderResponse fulfil(@PathVariable Long id, Actor actor) {
         facade.fulfillOrder(id, actor);
-        return OrderResponse.from(facade.getOrder(id));
+        return OrderResponse.from(facade.getOrder(id, actor));
     }
 
     /** Staff: cancel an in-progress order. */
     @PostMapping("/{id}/cancel")
     public OrderResponse cancel(@PathVariable Long id, Actor actor) {
         facade.cancelOrder(id, actor);
-        return OrderResponse.from(facade.getOrder(id));
+        return OrderResponse.from(facade.getOrder(id, actor));
     }
 
     /**

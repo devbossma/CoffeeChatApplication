@@ -15,6 +15,7 @@ import dev.saberlabs.coffeechat.facade.RoleNotAllowedException;
 import dev.saberlabs.coffeechat.facade.ShopClosedException;
 import dev.saberlabs.coffeechat.facade.UnknownActorException;
 import dev.saberlabs.coffeechat.model.CoffeeType;
+import dev.saberlabs.coffeechat.model.IllegalOrderTransitionException;
 import dev.saberlabs.coffeechat.model.ExtraType;
 import dev.saberlabs.coffeechat.model.LoyaltyTier;
 import dev.saberlabs.coffeechat.model.Order;
@@ -286,7 +287,7 @@ class OrderControllerTest extends AbstractWebMvcTest {
         @Test
         @DisplayName("prepare, fulfil and cancel each call the facade as the caller and return the order")
         void transitions() throws Exception {
-            when(facade.getOrder(1L)).thenReturn(sampleOrder(1L, OrderStatus.READY));
+            when(facade.getOrder(1L, CALLER)).thenReturn(sampleOrder(1L, OrderStatus.READY));
 
             mvc.perform(as7(post("/api/orders/1/prepare"))).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("READY"));
             mvc.perform(as7(post("/api/orders/1/fulfil"))).andExpect(status().isOk());
@@ -329,6 +330,20 @@ class OrderControllerTest extends AbstractWebMvcTest {
             mvc.perform(as7(post("/api/orders/1/fulfil")))
                     .andExpect(status().isConflict())
                     .andExpect(jsonPath("$.detail").value("Order 1 has not been paid"));
+        }
+
+        @Test
+        @DisplayName("an illegal transition (prepare a READY order, fulfil a PLACED one, cancel a FULFILLED one) is 409 with the reason, not 500")
+        void illegalTransitions() throws Exception {
+            doThrow(new IllegalOrderTransitionException(OrderStatus.READY, OrderStatus.READY)).when(facade).prepareOrder(eq(1L), any());
+            doThrow(new IllegalOrderTransitionException(OrderStatus.PLACED, OrderStatus.FULFILLED)).when(facade).fulfillOrder(eq(2L), any());
+            doThrow(new IllegalOrderTransitionException(OrderStatus.FULFILLED, OrderStatus.CANCELLED)).when(facade).cancelOrder(eq(3L), any());
+
+            mvc.perform(as7(post("/api/orders/1/prepare")))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.detail").value("Illegal order transition: READY -> READY"));
+            mvc.perform(as7(post("/api/orders/2/fulfil"))).andExpect(status().isConflict());
+            mvc.perform(as7(post("/api/orders/3/cancel"))).andExpect(status().isConflict());
         }
 
         @Test

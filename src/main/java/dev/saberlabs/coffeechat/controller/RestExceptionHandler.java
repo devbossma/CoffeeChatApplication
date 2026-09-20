@@ -13,6 +13,7 @@ import dev.saberlabs.coffeechat.facade.OrderStateConflictException;
 import dev.saberlabs.coffeechat.facade.RoleNotAllowedException;
 import dev.saberlabs.coffeechat.facade.ShopClosedException;
 import dev.saberlabs.coffeechat.facade.UnknownActorException;
+import dev.saberlabs.coffeechat.model.IllegalOrderTransitionException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,7 +37,8 @@ public class RestExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(RestExceptionHandler.class);
 
-    @ExceptionHandler({ShopClosedException.class, CoffeeNotOnMenuException.class, OrderStateConflictException.class})
+    @ExceptionHandler({ShopClosedException.class, CoffeeNotOnMenuException.class, OrderStateConflictException.class,
+            IllegalOrderTransitionException.class})
     public ProblemDetail onConflict(RuntimeException ex) {
         return ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, ex.getMessage());
     }

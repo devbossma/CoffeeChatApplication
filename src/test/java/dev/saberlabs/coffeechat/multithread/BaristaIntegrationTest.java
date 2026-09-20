@@ -47,7 +47,7 @@ class BaristaIntegrationTest extends AbstractIntegrationTest {
             Order placed = facade.placeOrder(new PlaceOrderRequest(customer.id(), CoffeeType.ESPRESSO, List.of()));
 
             await().atMost(Duration.ofSeconds(10))
-                    .untilAsserted(() -> assertEquals(OrderStatus.READY, facade.getOrder(placed.id()).status()));
+                    .untilAsserted(() -> assertEquals(OrderStatus.READY, orders.findById(placed.id()).orElseThrow().status()));
         }
 
         @Test
@@ -61,7 +61,7 @@ class BaristaIntegrationTest extends AbstractIntegrationTest {
 
             await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
                 for (Long id : ids) {
-                    assertEquals(OrderStatus.READY, facade.getOrder(id).status());
+                    assertEquals(OrderStatus.READY, orders.findById(id).orElseThrow().status());
                 }
             });
         }

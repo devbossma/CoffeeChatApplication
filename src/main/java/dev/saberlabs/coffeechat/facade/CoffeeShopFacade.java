@@ -160,8 +160,13 @@ public class CoffeeShopFacade {
         return reorder(orderId);
     }
 
-    /** @throws OrderNotFoundException if no order has that id. */
-    public Order getOrder(Long orderId) {
+    /**
+     * Unchecked read, for the facade's own flows only (package-private on purpose): an unenforced public read
+     * would be a back door around the owner-or-staff rule of {@link #getOrder(Long, Actor)}.
+     *
+     * @throws OrderNotFoundException if no order has that id.
+     */
+    Order getOrder(Long orderId) {
         return orders.findById(orderId).orElseThrow(() -> new OrderNotFoundException(orderId));
     }
 
@@ -239,7 +244,7 @@ public class CoffeeShopFacade {
      *
      * @throws OrderNotFoundException if {@code orderId} is unknown
      */
-    public Order reorder(Long orderId) {
+    Order reorder(Long orderId) {
         Order original = getOrder(orderId);
         OrderPrototype prototype = orderPrototypeProvider.getObject();
         prototype.copyOf(original);
