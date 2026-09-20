@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.jpa.test.autoconfigure.TestEntityManager;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @DisplayName("UserRepository")
@@ -24,6 +25,22 @@ class UserRepositoryTest extends AbstractRepositoryTest {
     @BeforeEach
     void setUp() {
         userRepository.deleteAll();
+    }
+
+    @Nested
+    @DisplayName("existsByRole()")
+    class ExistsByRoleTests {
+
+        @Test
+        @DisplayName("is true only for a role that has at least one user")
+        void exists() {
+            userRepository.saveAndFlush(new UserEntity("Alice", Role.CUSTOMER));
+            userRepository.saveAndFlush(new UserEntity("Maria", Role.MANAGER));
+
+            assertTrue(userRepository.existsByRole(Role.MANAGER));
+            assertTrue(userRepository.existsByRole(Role.CUSTOMER));
+            assertFalse(userRepository.existsByRole(Role.BARISTA));
+        }
     }
 
     @Nested

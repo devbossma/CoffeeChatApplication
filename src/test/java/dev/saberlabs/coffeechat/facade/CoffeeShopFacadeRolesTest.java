@@ -347,6 +347,43 @@ class CoffeeShopFacadeRolesTest extends AbstractIntegrationTest {
     }
 
     @Nested
+    @DisplayName("createStaff()")
+    class CreateStaffTests {
+
+        @Test
+        @DisplayName("a MANAGER creates a barista and another manager, and the new accounts have those roles")
+        void managerCreates() {
+            StaffMember bea = facade.createStaff(Actor.user(manager.id()), "Bea", dev.saberlabs.coffeechat.model.Role.BARISTA);
+            StaffMember mo = facade.createStaff(Actor.user(manager.id()), "Mo", dev.saberlabs.coffeechat.model.Role.MANAGER);
+
+            assertEquals(dev.saberlabs.coffeechat.model.Role.BARISTA, users.findById(bea.id()).orElseThrow().role());
+            assertEquals("Bea", bea.name());
+            assertEquals(dev.saberlabs.coffeechat.model.Role.MANAGER, mo.role());
+        }
+
+        @Test
+        @DisplayName("a customer or barista gets 403, an unknown user 401, and no account is created")
+        void others() {
+            long before = users.count();
+
+            assertThrows(RoleNotAllowedException.class,
+                    () -> facade.createStaff(Actor.user(alice.id()), "X", dev.saberlabs.coffeechat.model.Role.BARISTA));
+            assertThrows(RoleNotAllowedException.class,
+                    () -> facade.createStaff(Actor.user(barista.id()), "X", dev.saberlabs.coffeechat.model.Role.MANAGER));
+            assertThrows(UnknownActorException.class,
+                    () -> facade.createStaff(Actor.user(987_654L), "X", dev.saberlabs.coffeechat.model.Role.BARISTA));
+            assertEquals(before, users.count());
+        }
+
+        @Test
+        @DisplayName("creating a CUSTOMER through it is refused")
+        void customerRole() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> facade.createStaff(Actor.user(manager.id()), "X", dev.saberlabs.coffeechat.model.Role.CUSTOMER));
+        }
+    }
+
+    @Nested
     @DisplayName("illegal transitions")
     class IllegalTransitionTests {
 

@@ -84,6 +84,7 @@ public abstract class AbstractIntegrationTest extends SharedPostgresContainer {
                 context.getBean(CoffeePreparationResolver.class),
                 gateways,
                 context.getBean(OrderService.class),
+                context.getBean(StaffService.class),
                 context.getBean(PaymentService.class),
                 context.getBean(StaffAccess.class),
                 context.getBean(CustomerService.class),

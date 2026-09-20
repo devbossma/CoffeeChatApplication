@@ -338,22 +338,17 @@ undo, lost `@Version` race: 409. There is no REST endpoint for the transitions y
 is in place and tested for it. The caller's identity will arrive as a user id (an `X-User-Id` header),
 not as credentials.
 
-**Reorder.** The clone belongs to the *original order's customer*, and the request already names no
-caller. This is safe until Step 6 because it exposes nothing that `POST /api/orders` does not: with no
-authentication, anyone can already place an order for any customer id, and reorder cannot place one for
-anybody except that order's own customer. A caller identity check for reorder (only that customer, or
-staff) is a Step 6 concern, together with the endpoint's identity header.
+**Reorder.** The clone belongs to the *original order's customer*. Since Step 6 the caller is identified
+(`X-User-Id`) and only that customer, or staff, may reorder (see §9.8).
 
-**Creating staff.** `StaffService.createBarista` / `createManager` exist (used by tests and by Step 5
-chat); there is deliberately no REST endpoint, because with no authentication an open endpoint that mints
-managers would defeat the boundary.
+**Creating staff.** `StaffService.createBarista` / `createManager` back `POST /api/staff` (MANAGER only, Step 6);
+the first manager is seeded from one configuration property (§9.8).
 
 **Known limitations and Step 6 notes.**
 - Customers cannot cancel their own order through the API yet (only staff can).
 - `undoLastAction` and cancel are staff-only; a customer cannot undo a placement.
-- **Step 6 must solve bootstrapping:** a freshly started app has no way to create a barista or manager, so
-  a reviewer could not exercise the role-gated endpoints. Plan: a manager-guarded staff-creation endpoint
-  plus an initial manager seeded from configuration (property-driven, off by default in tests).
+- Bootstrapping (solved in Step 6): a manager-guarded staff-creation endpoint plus an initial manager seeded from
+  `coffeeshop.bootstrap.manager-name` (off unless set; on in the `local` profile).
 - A MANAGER's actions are not attributable in the audit trail (`changed_by` is NULL by rule).
 
 ### 9.7 Chat core (Part 03 Step 5, as built)
@@ -413,9 +408,35 @@ ACTIVE 409, not a participant 403, unknown session 404, invalid message 400, rol
 - After a transient write failure a pair waits for the next chat operation rather than a timer (bounded by the retry cap above).
 - `sent_at` is the application clock, so cross-transaction ordering is best-effort; the id breaks same-instant ties.
 
-**Step 6 notes (not built).** A barista needs a "my active session" read (today only the session id is known to
-the client); a customer needs to read their own session and its barista; staff creation and the property-seeded
-initial manager (§9.5 notes) are still required before a reviewer can exercise any of this over HTTP.
+**Step 6 (done, §9.8).** The "my active session" read for baristas and customers, staff creation and the
+property-seeded initial manager were built in Step 6.
+
+### 9.8 REST surface (Part 03 Step 6, as built)
+
+The user-facing description, with a verified curl walkthrough and the status-code table, is
+[`docs/API.md`](docs/API.md); this section records the decisions.
+
+- **Identity.** `X-User-Id` is resolved to an `Actor` by `web/ActorArgumentResolver`: a *claimed* identity, not
+  authentication (section 4). It never produces `Actor.SYSTEM`; `ControllerActorGuardTest` enforces that, and also
+  that no controller constructs an `Actor` itself or reaches past the facade to the command/order/payment/staff
+  layers. Roles are then enforced by the facade and services on that actor.
+- **Ownership.** A customer may place, read, reorder and pay only their own orders; staff may for anyone. Order of
+  checks is 401, then 404, then 403 (an authenticated caller can probe order-id existence; documented).
+- **Undo is not exposed.** The undo stack is global, so it would let any staff member cancel anyone's last order.
+- **Shop open/close and staff creation require a MANAGER.** The first manager is seeded from ONE property,
+  `coffeeshop.bootstrap.manager-name` (unset = never seed; set in `application-local.properties`;
+  idempotent; the id is logged at INFO because it is the credential).
+- **Payment.** 200 when paid; 402 with the payment result when the gateway declines; 409 for not READY, already
+  paid or an unpaid fulfil.
+- **Errors.** One `RestExceptionHandler` (extending `ResponseEntityExceptionHandler`), `ProblemDetail` everywhere.
+  There is deliberately no blanket `IllegalArgumentException` -> 400; only `InvalidChatMessageException` and bean
+  validation are client errors. `ExceptionMappingCoverageTest` fails if a domain exception is neither mapped nor
+  declared internal.
+- **Chat reads.** `GET /api/chat/sessions/mine` (a customer's own session with the barista's name, a barista's
+  active one with the customer's), and paged history (`page` from 0, `size` default 50, max 200).
+- **Test tiers.** Controller tests share ONE `@WebMvcTest` slice (`AbstractWebMvcTest`), so the whole suite builds
+  three Spring contexts: the full application, the `@DataJpaTest` slice and that one web slice. A new controller
+  dependency is added to that base class as one more `@MockitoBean`.
 
 ## 10. Testing (Part 04)
 

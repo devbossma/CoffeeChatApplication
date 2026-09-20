@@ -23,6 +23,7 @@ import dev.saberlabs.coffeechat.service.CustomerService;
 import dev.saberlabs.coffeechat.service.OrderService;
 import dev.saberlabs.coffeechat.service.PaymentService;
 import dev.saberlabs.coffeechat.service.StaffAccess;
+import dev.saberlabs.coffeechat.service.StaffService;
 import dev.saberlabs.coffeechat.singleton.CoffeeShop;
 import dev.saberlabs.coffeechat.strategy.PricingStrategy;
 import dev.saberlabs.coffeechat.strategy.PricingStrategyResolver;
@@ -50,6 +51,7 @@ public class CoffeeShopFacade {
     private final CoffeePreparationResolver preparations;
     private final PaymentGatewayResolver gateways;
     private final OrderService orders;
+    private final StaffService staff;
     private final PaymentService payments;
     private final StaffAccess staffAccess;
     private final CustomerService customers;
@@ -64,6 +66,7 @@ public class CoffeeShopFacade {
                             CoffeePreparationResolver preparations,
                             PaymentGatewayResolver gateways,
                             OrderService orders,
+                            StaffService staff,
                             PaymentService payments,
                             StaffAccess staffAccess,
                             CustomerService customers,
@@ -77,6 +80,7 @@ public class CoffeeShopFacade {
         this.preparations = preparations;
         this.gateways = gateways;
         this.orders = orders;
+        this.staff = staff;
         this.payments = payments;
         this.staffAccess = staffAccess;
         this.customers = customers;
@@ -264,6 +268,24 @@ public class CoffeeShopFacade {
     public void undoLastAction(Actor actor) {
         Long recordedActor = staffAccess.authorize(actor, StaffAccess.STAFF);
         invoker.undoLast(recordedActor);
+    }
+
+    /**
+     * Creates a staff account. Only a MANAGER may (the first manager is seeded from configuration at startup).
+     *
+     * @param role BARISTA or MANAGER
+     * @throws UnknownActorException    if the actor's user id does not exist (401)
+     * @throws RoleNotAllowedException  if the actor is not a MANAGER (403)
+     * @throws IllegalArgumentException if {@code role} is neither BARISTA nor MANAGER, or the name is blank
+     */
+    public StaffMember createStaff(Actor actor, String name, dev.saberlabs.coffeechat.model.Role role) {
+        staffAccess.authorize(actor, java.util.EnumSet.of(dev.saberlabs.coffeechat.model.Role.MANAGER));
+        UserEntity created = switch (role) {
+            case BARISTA -> staff.createBarista(name);
+            case MANAGER -> staff.createManager(name);
+            default -> throw new IllegalArgumentException("Only BARISTA and MANAGER accounts can be created here, not " + role);
+        };
+        return new StaffMember(created.id(), created.name(), created.role());
     }
 
     /**
