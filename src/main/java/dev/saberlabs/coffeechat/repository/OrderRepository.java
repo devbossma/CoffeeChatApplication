@@ -30,6 +30,10 @@ public interface OrderRepository extends JpaRepository<OrderEntity, Long> {
     @Query("select o from OrderEntity o where o.id = :id")
     Optional<OrderEntity> findForUpdateById(@Param("id") Long id);
 
+    /** The ids of orders in any of {@code statuses}, oldest first. Served by {@code idx_orders_status}. */
+    @Query("select o.id from OrderEntity o where o.status in :statuses order by o.id")
+    List<Long> findIdsByStatusIn(@Param("statuses") List<OrderStatus> statuses);
+
     List<OrderEntity> findByStatusIn(List<OrderStatus> statuses);
 
     /**

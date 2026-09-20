@@ -109,7 +109,7 @@ dev.saberlabs.coffeechat
 ├── facade/         CoffeeShopFacade (@Service)
 ├── prototype/      OrderPrototype (@Scope("prototype"))
 ├── template/       CoffeePreparationTemplate + per-coffee subclasses
-├── model/          Order, Customer, Coffee, OrderStatus, LoyaltyTier, Role
+├── model/          Order (immutable snapshot), Coffee, PriceBreakdown, OrderStatus, LoyaltyTier, Role
 ├── controller/      REST controllers (order, chat)
 ├── service/        OrderService, ChatService, NotificationService
 └── repository/      Spring Data JPA repositories (chat, orders — see §9)
@@ -138,6 +138,30 @@ dev.saberlabs.coffeechat
 | `Barista.run()` loop blocks on `orderQueue.dequeue()` | An `@Async` `prepareOrder(Order)` method is invoked once per dequeued order (a small `@Scheduled` or event-driven poller pulls from the queue and dispatches), instead of one thread owning an infinite loop. Evaluate both against the assignment's "process orders asynchronously using `@Async`" wording before committing — the poller shape is likely the more idiomatic fit. |
 | Order status change calls `notifyObservers` directly | Order status change publishes `OrderStatusChangedEvent`; a listener sends the "order ready" notification. Async listeners (`@Async @EventListener`) if the notification itself shouldn't block the preparation thread. |
 | `CoffeeShop`'s synchronized order list + `AtomicInteger` id counters | Kept conceptually (thread-safe order tracking still needed), but once orders are JPA-backed (§9), persistence itself gives most of the safety; keep in-memory counters only where the DB doesn't already provide an equivalent (e.g. a DB sequence/identity column replaces `orderIdCounter`). |
+
+### 8.1 As built (after Part 03 Step 3)
+
+The table above records the design questions; this is what the code does now.
+
+- **`OrderQueue` carries order ids, not objects** (`BlockingQueue<Long>`): the database is the only
+  holder of order state, so a queued mutable object would be a stale second copy. It keeps a set of
+  waiting ids so an id already queued is not queued twice, and forgets an id the moment it is taken,
+  so a legitimate re-enqueue (the barista's retry path) is never blocked.
+- **`BaristaSupervisor` is a `SmartLifecycle`** (auto-start, phase above the executor's so it stops
+  first) and `Barista` waits on a timed `poll` and re-checks its stop flag, so a context close *and*
+  a Spring-7 test-context pause both stop the loops without a 30s executor-stop stall.
+- **The barista thread is not in a transaction.** Every facade call it makes runs in its own
+  transaction (see §9.5). A lost `@Version` race is retried (3 attempts, each reloading); an order
+  that is gone or no longer preparable is skipped quietly; an unexpected failure is re-enqueued after
+  a short delay, at most 3 attempts in total, then logged at ERROR and left for startup recovery.
+- **Restart recovery** (`OrderRecovery`, on `ApplicationReadyEvent`): the queue is in memory, so on a
+  real startup PLACED and PREPARING rows are re-enqueued oldest first. It is tied to
+  `ApplicationReadyEvent`, not to the supervisor's restartable lifecycle, so a resumed test context
+  does not recover twice. Recovery publishes no events. Correctness rests on idempotent consumption
+  (preparing an order that is no longer PLACED/PREPARING is a quiet skip); the queue's dedupe is an
+  optimisation. `PREPARING` is never committed by `PrepareOrderCommand` (one transaction: the recipe
+  only logs steps), but a `PREPARING` row from any other source is finished, not stranded.
+- **Notifications and the queue happen after commit**, the audit row inside the transaction (§9.5).
 
 ## 9. Chat & Persistence (Part 03)
 
@@ -207,6 +231,63 @@ management. That whole class disappears; Spring Boot's
 | `POST` | `/api/chat/sessions` | Start a chat session |
 | `POST` | `/api/chat/sessions/{id}/messages` | Send a chat message / order command |
 | `GET` | `/api/chat/sessions/{id}/messages` | Load chat history |
+
+### 9.5 Order persistence and lifecycle (Part 03 Step 3, as built)
+
+**Domain vs entity.** `OrderEntity`/`UserEntity` are the only holders of order and customer state.
+`model.Customer` and every in-memory holder (the maps and counters in `OrderService` /
+`CustomerService`) are gone. `model.Order` is an **immutable snapshot record** built by `OrderMapper`
+inside the read transaction (extras copied out while the session is open; the coffee description is
+rebuilt via Factory + Decorator, never stored). Transition legality lives on
+`OrderEntity.transitionTo`. `OrderEntity.customerId()` is a read-only mapped column so listing orders
+does not initialise a lazy customer proxy per order.
+
+**Transactions.** `OrderInvoker` runs every command in exactly one `TransactionTemplate` transaction
+and records history/undo only *after* commit (a commit-time `@Version` failure is not recorded).
+Commands hold order ids and load the managed entity inside `execute()`. `@Version` conflicts: the
+REST layer maps `OptimisticLockingFailureException` to **409** (no auto-retry: the client should
+re-read); the barista retries and skips as in §8.1. **Known limitation:** `placeOrder` derives the
+customer's loyalty tier just before its command runs, so a fulfilment committing in that gap can make
+the frozen tier stale by one (the tier and price stay consistent with each other).
+
+**Events and phases (single publish point).** `OrderEventPublisher` is the only publisher, and it
+throws if no transaction is active (a `@TransactionalEventListener` silently drops an event published
+outside one). One event, two listener kinds:
+
+| Listener | Phase | Why |
+|---|---|---|
+| `OrderStatusHistoryListener` | plain `@EventListener`, `MANDATORY` | the audit row commits or rolls back with the status change and cannot disagree with it; if the audit write fails, the status change rolls back |
+| `OrderNotificationListener` | `AFTER_COMMIT` | never announce a change that rolled back; entry dropped when the order is FULFILLED/CANCELLED |
+| `OrderQueueDispatcher` | `AFTER_COMMIT`, fresh placement only (`from == null`) | a barista can never dequeue an uncommitted order; an undo restoring PLACED cannot re-queue |
+
+An `AFTER_COMMIT` listener must not touch the database (it would need its own `REQUIRES_NEW`).
+`changed_by` is NULL in Step 3; `OrderCommand.actorUserId()` and the event's `actorUserId` are the
+seam Step 4 fills (with the BARISTA-only check).
+
+**Payment.** The gateway declining is a **FAILED `PaymentResult`, not an exception**: the command
+commits a FAILED row (throwing would roll it back; a `REQUIRES_NEW` step needs a second pooled
+connection per in-flight payment). The `payments` row is the order's *current* payment state
+(`UNIQUE(order_id)`): a FAILED row is updated in place by a retry (only the latest failure is kept, no
+attempt log), a PAID row is final. Only a READY order is payable. The amount is always the order's
+persisted total (the adapter's reported amount is asserted equal). Concurrent payers are serialised by
+a pessimistic row lock on the order taken **before** the gateway call, so the second sees PAID and is
+rejected without being charged (409). `facade.processOrder` stops on a FAILED payment and returns an
+`OrderOutcome`.
+
+**Fulfilment.** Requires READY **and a PAID payment**, then increments `fulfilled_orders` with an atomic
+SQL update in the same transaction, after the status change has been flushed (so the `@Version` check
+fires first): exactly once per order. Unpaid fulfilment is 409 because loyalty tiers derive from
+`fulfilled_orders`. **Known limitation:** cancelling an already-paid order has no refund flow (no real
+processor, §4).
+
+**Undo is a limited convenience, not a general reversal.** Only a placement that is still PLACED (it
+cancels) and the cancellation of a READY order can be undone. Undo of Pay, Fulfil and Prepare (and of
+cancelling a PLACED order) throws `UndoNotSupportedException` (409): reversing them has effects outside
+the order row (a payment, the loyalty count, the queue) that are not reversed.
+
+**Reorder (Prototype)** rebuilds from the persisted base coffee and the ordered extras list (duplicates
+and order preserved by `@OrderColumn`), never copies id/status/timestamps/price/tier, and ends in
+`facade.placeOrder`, so the clone is priced at the customer's *current* tier and queued like any order.
 
 ## 10. Testing (Part 04)
 

@@ -86,6 +86,12 @@ public class OrderService {
         return orders.findById(orderId).map(mapper::toSnapshot);
     }
 
+    /** The ids of orders still awaiting preparation (PLACED, or PREPARING left by an interrupted run), oldest first. */
+    @Transactional(readOnly = true)
+    public List<Long> findUnfinishedOrderIds() {
+        return orders.findIdsByStatusIn(List.of(OrderStatus.PLACED, OrderStatus.PREPARING));
+    }
+
     @Transactional(readOnly = true)
     public List<Order> findByCustomer(@NotNull Long customerId) {
         Objects.requireNonNull(customerId, "customerId cannot be null");

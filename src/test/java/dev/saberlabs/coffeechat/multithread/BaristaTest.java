@@ -146,8 +146,9 @@ class BaristaTest {
         }
 
         @Test
-        @DisplayName("gives up after MAX_ATTEMPTS conflicting attempts but keeps serving later orders")
-        void givesUpAfterMaxAttempts() throws InterruptedException {
+        @DisplayName("keeps losing the @Version race: retried MAX_ATTEMPTS times per round, then re-queued, and later orders are still served")
+        void conflictsAreRequeuedNotDropped() throws InterruptedException {
+            barista = new Barista(orderQueue, facade, 10);
             CountDownLatch secondPrepared = new CountDownLatch(1);
             doThrow(new OptimisticLockingFailureException("stale")).when(facade).prepareOrder(1L);
             doAnswerCountDown(secondPrepared, 2L);
@@ -157,8 +158,96 @@ class BaristaTest {
             orderQueue.enqueue(order(2L));
 
             assertTrue(secondPrepared.await(2, TimeUnit.SECONDS));
-            verify(facade, org.mockito.Mockito.times(Barista.MAX_ATTEMPTS)).prepareOrder(1L);
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).untilAsserted(() ->
+                    verify(facade, org.mockito.Mockito.times(Barista.MAX_ATTEMPTS * Barista.MAX_UNEXPECTED_ATTEMPTS))
+                            .prepareOrder(1L));
             stopAndJoin();
+        }
+
+        @Test
+        @DisplayName("an unexpected failure twice, then success: the order is re-queued each time and finally prepared")
+        void unexpectedFailureRequeuedThenSucceeds() throws InterruptedException {
+            barista = new Barista(orderQueue, facade, 10);
+            CountDownLatch prepared = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+            org.mockito.Mockito.doAnswer(inv -> {
+                if (calls.incrementAndGet() <= 2) {
+                    throw new RuntimeException("database hiccup");
+                }
+                prepared.countDown();
+                return null;
+            }).when(facade).prepareOrder(1L);
+            startLoop();
+
+            orderQueue.enqueue(order(1L));
+
+            assertTrue(prepared.await(3, TimeUnit.SECONDS));
+            assertEquals(3, calls.get());
+            stopAndJoin();
+        }
+
+        @Test
+        @DisplayName("an order that always fails unexpectedly gets exactly MAX_UNEXPECTED_ATTEMPTS attempts, is then left alone, and the loop keeps serving")
+        void alwaysFailingIsBounded() throws InterruptedException {
+            barista = new Barista(orderQueue, facade, 10);
+            CountDownLatch secondPrepared = new CountDownLatch(1);
+            doThrow(new RuntimeException("always broken")).when(facade).prepareOrder(1L);
+            doAnswerCountDown(secondPrepared, 2L);
+            startLoop();
+
+            orderQueue.enqueue(order(1L));
+            orderQueue.enqueue(order(2L));
+
+            assertTrue(secondPrepared.await(2, TimeUnit.SECONDS));
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(3)).untilAsserted(() ->
+                    verify(facade, org.mockito.Mockito.times(Barista.MAX_UNEXPECTED_ATTEMPTS)).prepareOrder(1L));
+            // no further retry is scheduled after giving up: still exactly MAX_UNEXPECTED_ATTEMPTS a moment later
+            org.awaitility.Awaitility.await().pollDelay(java.time.Duration.ofMillis(300)).atMost(java.time.Duration.ofSeconds(2))
+                    .untilAsserted(() -> verify(facade, org.mockito.Mockito.times(Barista.MAX_UNEXPECTED_ATTEMPTS)).prepareOrder(1L));
+            assertTrue(orderQueue.isEmpty());
+            stopAndJoin();
+        }
+
+        @Test
+        @DisplayName("after giving up, the same id starts again with a fresh attempt budget (a later recovery re-enqueue is not penalised)")
+        void budgetResetsAfterGivingUp() throws InterruptedException {
+            barista = new Barista(orderQueue, facade, 10);
+            doThrow(new RuntimeException("always broken")).when(facade).prepareOrder(1L);
+            startLoop();
+
+            orderQueue.enqueue(order(1L));
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(3)).untilAsserted(() ->
+                    verify(facade, org.mockito.Mockito.times(Barista.MAX_UNEXPECTED_ATTEMPTS)).prepareOrder(1L));
+            org.awaitility.Awaitility.await().until(orderQueue::isEmpty);
+
+            orderQueue.enqueue(order(1L));
+
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(3)).untilAsserted(() ->
+                    verify(facade, org.mockito.Mockito.times(2 * Barista.MAX_UNEXPECTED_ATTEMPTS)).prepareOrder(1L));
+            stopAndJoin();
+        }
+
+        @Test
+        @DisplayName("a re-queue never duplicates an id that is already waiting (dedupe set respected)")
+        void requeueRespectsDedupe() throws InterruptedException {
+            barista = new Barista(orderQueue, facade, 10);
+            CountDownLatch prepared = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+            org.mockito.Mockito.doAnswer(inv -> {
+                if (calls.incrementAndGet() == 1) {
+                    orderQueue.enqueue(order(1L)); // recovery re-enqueues while the failed attempt is in flight
+                    throw new RuntimeException("hiccup");
+                }
+                prepared.countDown();
+                return null;
+            }).when(facade).prepareOrder(1L);
+            startLoop();
+
+            orderQueue.enqueue(order(1L));
+
+            assertTrue(prepared.await(3, TimeUnit.SECONDS));
+            stopAndJoin();
+            assertTrue(orderQueue.size() <= 1);
         }
 
         @Test
@@ -229,6 +318,17 @@ class BaristaTest {
                 latch.countDown();
                 return null;
             }).when(facade).prepareOrder(org.mockito.ArgumentMatchers.anyLong());
+        }
+    }
+
+    @Nested
+    @DisplayName("constructor (retry delay)")
+    class RetryDelayConstructorTests {
+
+        @Test
+        @DisplayName("rejects a negative retry delay")
+        void rejectsNegative() {
+            assertThrows(IllegalArgumentException.class, () -> new Barista(orderQueue, facade, -1));
         }
     }
 

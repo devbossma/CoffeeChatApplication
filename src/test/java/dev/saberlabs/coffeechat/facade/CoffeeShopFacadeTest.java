@@ -328,6 +328,26 @@ class CoffeeShopFacadeTest extends AbstractIntegrationTest {
         }
 
         @Test
+        @DisplayName("rebuilds from the PERSISTED extras list of an order written straight to the database (order and duplicates kept)")
+        void rebuildsFromPersistedExtras() {
+            UserEntity customer = customer("Alice", 0);
+            java.time.Instant now = java.time.Instant.now();
+            Long seeded = orders.saveAndFlush(new dev.saberlabs.coffeechat.entity.OrderEntity(
+                    customer, CoffeeType.LATTE, List.of(ExtraType.SUGAR, ExtraType.MILK, ExtraType.MILK),
+                    OrderStatus.FULFILLED, LoyaltyTier.GOLD,
+                    dev.saberlabs.coffeechat.model.PriceBreakdown.of(new BigDecimal("3.50"), new BigDecimal("1.50"), new BigDecimal("1.00")),
+                    now, now)).id();
+
+            Order clone = facade.reorder(seeded);
+
+            assertEquals(List.of(ExtraType.SUGAR, ExtraType.MILK, ExtraType.MILK), clone.extras());
+            assertEquals(CoffeeType.LATTE, clone.baseType());
+            assertEquals(LoyaltyTier.REGULAR, clone.appliedLoyaltyTier(), "tier and price are recomputed, not copied");
+            assertEquals(OrderStatus.PLACED, clone.status());
+            assertTrue(orderQueue.contains(clone.id()), "the clone goes through placeOrder, so it is queued once committed");
+        }
+
+        @Test
         @DisplayName("re-prices the clone against the customer's CURRENT tier, not the original's")
         void repricesAgainstCurrentTier() {
             UserEntity customer = customer("Alice", 5); // REGULAR

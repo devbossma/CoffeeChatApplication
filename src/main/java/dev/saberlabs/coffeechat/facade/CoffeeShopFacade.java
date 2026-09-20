@@ -87,6 +87,10 @@ public class CoffeeShopFacade {
      * customer's <em>current</em> loyalty tier from {@code fulfilled_orders} (frozen into the order
      * from here on), prices it, and runs {@link PlaceOrderCommand}.
      *
+     * <p>Known limitation: the tier is read just before the command's transaction, so a fulfilment
+     * that commits in that gap can leave the frozen tier one order stale. Tier and price are always
+     * consistent with each other, and the next order picks up the new tier.
+     *
      * @throws ShopClosedException       if the shop is not accepting orders
      * @throws CoffeeNotOnMenuException  if the requested type is off the menu
      * @throws CustomerNotFoundException if {@code request.customerId()} is not a CUSTOMER user

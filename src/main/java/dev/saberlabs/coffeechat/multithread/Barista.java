@@ -5,11 +5,18 @@ import dev.saberlabs.coffeechat.facade.OrderNotFoundException;
 import jakarta.validation.constraints.NotNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -37,13 +44,37 @@ public class Barista {
     /** Attempts at one order when a concurrent writer wins the {@code @Version} race. */
     static final int MAX_ATTEMPTS = 3;
 
+    /**
+     * Total attempts at one order that keeps failing unexpectedly (each retry is a delayed re-enqueue,
+     * so another barista may take it). After the last one the order is left PLACED for startup recovery.
+     */
+    static final int MAX_UNEXPECTED_ATTEMPTS = 3;
+
     private final OrderQueue orderQueue;
     private final CoffeeShopFacade facade;
+    private final long retryDelayMs;
+    private final Map<Long, Integer> unexpectedAttempts = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService retryScheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "barista-retry");
+        thread.setDaemon(true);
+        return thread;
+    });
     private volatile boolean running = true;
 
-    public Barista(@NotNull OrderQueue orderQueue, @NotNull CoffeeShopFacade facade) {
+    @Autowired
+    public Barista(@NotNull OrderQueue orderQueue,
+                   @NotNull CoffeeShopFacade facade,
+                   @Value("${coffeeshop.barista-retry-delay-ms:200}") long retryDelayMs) {
         this.orderQueue = Objects.requireNonNull(orderQueue, "orderQueue cannot be null");
         this.facade = Objects.requireNonNull(facade, "facade cannot be null");
+        if (retryDelayMs < 0) {
+            throw new IllegalArgumentException("retry delay cannot be negative: " + retryDelayMs);
+        }
+        this.retryDelayMs = retryDelayMs;
+    }
+
+    public Barista(@NotNull OrderQueue orderQueue, @NotNull CoffeeShopFacade facade) {
+        this(orderQueue, facade, 200);
     }
 
     /**
@@ -86,22 +117,51 @@ public class Barista {
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             try {
                 facade.prepareOrder(orderId);
+                unexpectedAttempts.remove(orderId);
                 log.info("{} prepared order {}", barista, orderId);
                 return;
             } catch (OptimisticLockingFailureException e) {
                 log.warn("{} lost a concurrent update on order {} (attempt {}/{})", barista, orderId, attempt, MAX_ATTEMPTS);
             } catch (OrderNotFoundException e) {
+                unexpectedAttempts.remove(orderId);
                 log.warn("{} skipped order {}: not found", barista, orderId);
                 return;
             } catch (IllegalStateException e) {
+                unexpectedAttempts.remove(orderId);
                 log.info("{} skipped order {}: {}", barista, orderId, e.getMessage());
                 return;
             } catch (RuntimeException e) {
-                log.error("{} failed to prepare order {}: {}", barista, orderId, e.getMessage(), e);
+                requeueAfterUnexpectedFailure(barista, orderId, e);
                 return;
             }
         }
-        log.error("{} gave up on order {} after {} conflicting attempts", barista, orderId, MAX_ATTEMPTS);
+        // Every attempt lost the @Version race: the id must not be dropped either.
+        requeueAfterUnexpectedFailure(barista, orderId, new OptimisticLockingFailureException(
+                "lost the concurrent-update race " + MAX_ATTEMPTS + " times in a row"));
+    }
+
+    /**
+     * An unexpected failure (not a lost race, not a gone/finished order) would otherwise drop the id
+     * and leave the order PLACED until the next restart. Re-enqueue it after a short delay, up to
+     * {@link #MAX_UNEXPECTED_ATTEMPTS} attempts in total (the queue's dedupe set still applies, so a
+     * concurrent recovery enqueue cannot double it), then log ERROR and leave it for startup recovery.
+     */
+    private void requeueAfterUnexpectedFailure(String barista, Long orderId, RuntimeException cause) {
+        int attempt = unexpectedAttempts.merge(orderId, 1, Integer::sum);
+        if (attempt >= MAX_UNEXPECTED_ATTEMPTS) {
+            unexpectedAttempts.remove(orderId);
+            log.error("{} gave up on order {} after {} unexpected failures; it stays PLACED until startup recovery: {}",
+                    barista, orderId, attempt, cause.getMessage(), cause);
+            return;
+        }
+        log.warn("{} failed unexpectedly on order {} (attempt {}/{}), re-queueing: {}",
+                barista, orderId, attempt, MAX_UNEXPECTED_ATTEMPTS, cause.getMessage());
+        retryScheduler.schedule(() -> orderQueue.enqueue(orderId), retryDelayMs, TimeUnit.MILLISECONDS);
+    }
+
+    @PreDestroy
+    void closeRetryScheduler() {
+        retryScheduler.shutdownNow();
     }
 
     /** Signals the consumer loop to stop after its current wait/order completes. */
