@@ -7,8 +7,12 @@ Everything below was exercised against a real running instance (local profile, P
 
 ```bash
 docker compose up -d                                   # local Postgres
-mvn spring-boot:run -Dspring-boot.run.profiles=local   # the "local" profile seeds the first manager
+mvn spring-boot:run "-Dspring-boot.run.profiles=local" # the "local" profile seeds the first manager
 ```
+
+On Windows (PowerShell), the `-D` property must be quoted as one argument as shown above, or
+PowerShell splits it on the `=` and Spring Boot never sees it. Quoting it is harmless on
+macOS/Linux too, so the same command works everywhere.
 
 The local profile sets `coffeeshop.bootstrap.manager-name=Manager` (see
 `src/main/resources/application-local.properties`). On an empty database the log then says:
@@ -19,6 +23,19 @@ Seeded initial manager 'Manager' with id 1: send it as the X-User-Id header
 
 Without that property (the default, and in all tests) nothing is seeded. It is one property, and it is
 idempotent: if any MANAGER already exists, nothing is created.
+
+The walkthrough below assumes an **empty** database — its sample ids (manager 1, customer 2,
+barista 3, ...) are what a fresh database gives you. If you've already run it once, re-running it
+will mint different ids than the ones shown there. To get back to a clean slate, reset the local
+Postgres volume before starting again:
+
+```
+docker compose down -v
+docker compose up -d
+```
+
+`-v` removes the named volume along with the containers — this throws away all local data, not
+just the chat/orders created while testing.
 
 ## Identity: `X-User-Id` is a demo claim, not authentication
 
@@ -37,7 +54,8 @@ header. A verified token or session would set the same `Actor` there and nothing
 
 ## Walkthrough (curl)
 
-Ids below are what an empty database gives you: manager 1, customer 2, barista 3.
+Ids below are what an **empty** database gives you: manager 1, customer 2, barista 3 (see
+"Running it" above for how to reset to a clean slate before re-running this).
 
 ```bash
 B=http://localhost:8080; J='Content-Type: application/json'
